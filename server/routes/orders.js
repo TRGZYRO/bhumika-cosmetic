@@ -5,7 +5,7 @@
  * Body:
  *   {
  *     items: [{ productId, quantity }],
- *     customer: { name, phone, email, address, pincode, notes },
+ *     customer: { name, phone, email, address, pincode, city, state, landmark, latitude, longitude, notes },
  *     paymentMethod: "cod"
  *   }
  *
@@ -46,11 +46,21 @@ export default async function handler(req, res) {
   const email = clean(customer.email, 120);
   const address = clean(customer.address, 300);
   const pincode = clean(customer.pincode, 10);
+  const city = clean(customer.city, 80);
+  const state = clean(customer.state, 80);
+  const landmark = clean(customer.landmark, 150);
+  const latitude = customer.latitude ? Number(customer.latitude) : null;
+  const longitude = customer.longitude ? Number(customer.longitude) : null;
   const notes = clean(customer.notes, 300);
 
   if (!name) return sendError(res, 400, "Please enter your name.");
   if (!PHONE_PATTERN.test(phone)) return sendError(res, 400, "Please enter a valid phone number.");
   if (address.length < 10) return sendError(res, 400, "Please enter your full delivery address.");
+  if (!city) return sendError(res, 400, "Please enter your city.");
+  if (!state) return sendError(res, 400, "Please enter your state.");
+  if (pincode && !/^[0-9]{6}$/.test(pincode)) return sendError(res, 400, "Pincode should be 6 digits.");
+  if (latitude !== null && (latitude < -90 || latitude > 90)) return sendError(res, 400, "Invalid latitude.");
+  if (longitude !== null && (longitude < -180 || longitude > 180)) return sendError(res, 400, "Invalid longitude.");
 
   const rawItems = Array.isArray(body.items) ? body.items.slice(0, MAX_ITEMS) : [];
   const requested = new Map();
@@ -134,6 +144,7 @@ export default async function handler(req, res) {
     }
 
     const orderNumber = makeOrderNumber();
+    const fullAddress = [address, city, state, pincode].filter(Boolean).join(", ");
     const { data: order, error: orderErr } = await admin
       .from("orders")
       .insert({
@@ -143,7 +154,12 @@ export default async function handler(req, res) {
         customer_phone: phone,
         customer_email: email || null,
         fulfilment_method: "delivery",
-        delivery_address: [address, pincode].filter(Boolean).join(", "),
+        delivery_address: fullAddress,
+        delivery_city: city || null,
+        delivery_state: state || null,
+        delivery_landmark: landmark || null,
+        delivery_latitude: latitude,
+        delivery_longitude: longitude,
         special_instructions: notes || null,
         subtotal,
         tax_amount: taxAmount,

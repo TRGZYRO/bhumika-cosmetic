@@ -14,5 +14,6 @@ export const ROUTES = {
   orders: () => import("./routes/orders.js"),
   "my-orders": () => import("./routes/my-orders.js"),
   profile: () => import("./routes/profile.js"),
+  addresses: () => import("./routes/addresses.js"),
   media: () => import("./routes/media.js"),
 };
