@@ -1,0 +1,165 @@
+import { useEffect, useMemo, useState } from "react";
+import { ChevronDown, ChevronUp, Phone, MapPin } from "lucide-react";
+import { adminDb } from "../../lib/adminDb";
+import { formatPrice } from "../../lib/catalog";
+
+const STATUSES = [
+  { key: "pending", label: "New" },
+  { key: "confirmed", label: "Confirmed" },
+  { key: "out_for_delivery", label: "Out for delivery" },
+  { key: "completed", label: "Delivered" },
+  { key: "cancelled", label: "Cancelled" },
+];
+const STATUS_STYLES = {
+  pending: "bg-gold/20 text-[#7a5a1f]",
+  confirmed: "bg-petal text-rosewood",
+  out_for_delivery: "bg-rose/15 text-rosewood",
+  completed: "bg-[#166534]/10 text-[#166534]",
+  cancelled: "bg-[#b42318]/10 text-[#b42318]",
+};
+
+export default function AdminOrders() {
+  const [orders, setOrders] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [filter, setFilter] = useState("all");
+  const [openId, setOpenId] = useState(null);
+  const [savingId, setSavingId] = useState(null);
+
+  async function load() {
+    try {
+      setOrders(await adminDb.listOrders());
+      setError("");
+    } catch (err) {
+      setError(err.message || "Could not load orders.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  const counts = useMemo(() => {
+    const c = { all: orders.length };
+    STATUSES.forEach((s) => (c[s.key] = orders.filter((o) => o.order_status === s.key).length));
+    return c;
+  }, [orders]);
+
+  const visible = filter === "all" ? orders : orders.filter((o) => o.order_status === filter);
+
+  async function setStatus(order, status) {
+    setSavingId(order.id);
+    setError("");
+    try {
+      const { data } = await adminDb.updateOrder(order.id, { order_status: status });
+      setOrders((list) => list.map((o) => (o.id === order.id ? { ...o, ...data } : o)));
+    } catch (err) {
+      setError(err.message || "Could not update the order.");
+    } finally {
+      setSavingId(null);
+    }
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-wrap gap-2" role="group" aria-label="Filter orders by status">
+        {[{ key: "all", label: "All" }, ...STATUSES].map((s) => (
+          <button
+            key={s.key}
+            type="button"
+            onClick={() => setFilter(s.key)}
+            aria-pressed={filter === s.key}
+            className={`rounded-full px-4 py-2 text-sm font-semibold transition-colors ${
+              filter === s.key ? "bg-rosewood text-white" : "bg-white text-cocoa ring-1 ring-petal hover:ring-rose"
+            }`}
+          >
+            {s.label} <span className="opacity-70">({counts[s.key] ?? 0})</span>
+          </button>
+        ))}
+      </div>
+
+      {error && <p role="alert" className="rounded-xl border border-[#b42318]/30 bg-[#b42318]/5 p-4 text-sm text-[#b42318]">{error}</p>}
+
+      <div className="card overflow-hidden">
+        {loading ? (
+          <p className="p-8 text-sm text-cocoa/60">Loading orders…</p>
+        ) : visible.length === 0 ? (
+          <p className="p-12 text-center font-display text-2xl italic text-rosewood">No orders here yet.</p>
+        ) : (
+          <ul className="divide-y divide-petal/60">
+            {visible.map((o) => {
+              const open = openId === o.id;
+              return (
+                <li key={o.id}>
+                  <div className="flex flex-wrap items-center gap-4 px-6 py-5 md:px-7">
+                    <button
+                      type="button"
+                      onClick={() => setOpenId(open ? null : o.id)}
+                      aria-expanded={open}
+                      className="flex flex-1 items-center gap-3 text-left"
+                    >
+                      {open ? <ChevronUp size={18} className="text-cocoa/50" /> : <ChevronDown size={18} className="text-cocoa/50" />}
+                      <span>
+                        <span className="block font-semibold text-cocoa">{o.order_number}</span>
+                        <span className="text-xs text-cocoa/55">
+                          {o.customer_name} · {new Date(o.created_at).toLocaleString("en-IN", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
+                        </span>
+                      </span>
+                    </button>
+                    <span className="font-semibold text-cocoa">{formatPrice(o.total_amount)}</span>
+                    <span className={`rounded-full px-3 py-1 text-xs font-semibold ${STATUS_STYLES[o.order_status] || ""}`}>
+                      {STATUSES.find((s) => s.key === o.order_status)?.label || o.order_status}
+                    </span>
+                    <label className="sr-only" htmlFor={`status-${o.id}`}>Order status</label>
+                    <select
+                      id={`status-${o.id}`}
+                      value={o.order_status}
+                      disabled={savingId === o.id}
+                      onChange={(e) => setStatus(o, e.target.value)}
+                      className="rounded-full border border-petal bg-white px-4 py-2 text-sm text-cocoa focus:border-rose focus:outline-none disabled:opacity-60"
+                    >
+                      {STATUSES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
+                    </select>
+                  </div>
+
+                  {open && (
+                    <div className="grid gap-8 bg-blush/50 px-6 py-6 md:grid-cols-[1fr_1fr] md:px-7">
+                      <div>
+                        <h3 className="mb-3 text-sm font-semibold uppercase tracking-wider text-cocoa/60">Items</h3>
+                        <ul className="space-y-2 text-sm">
+                          {(o.order_items || []).map((i) => (
+                            <li key={i.id} className="flex justify-between gap-4">
+                              <span>{i.product_name}{i.variant_name ? ` · ${i.variant_name}` : ""} × {i.quantity}</span>
+                              <span className="font-medium">{formatPrice(i.total_price)}</span>
+                            </li>
+                          ))}
+                        </ul>
+                        <dl className="mt-5 space-y-1.5 border-t border-petal pt-4 text-sm">
+                          <div className="flex justify-between"><dt className="text-cocoa/65">Subtotal</dt><dd>{formatPrice(o.subtotal)}</dd></div>
+                          <div className="flex justify-between"><dt className="text-cocoa/65">Delivery</dt><dd>{Number(o.delivery_charge) === 0 ? "Free" : formatPrice(o.delivery_charge)}</dd></div>
+                          <div className="flex justify-between font-semibold"><dt>Total (cash on delivery)</dt><dd>{formatPrice(o.total_amount)}</dd></div>
+                        </dl>
+                      </div>
+                      <div className="space-y-4 text-sm">
+                        <h3 className="text-sm font-semibold uppercase tracking-wider text-cocoa/60">Customer</h3>
+                        <p className="flex items-center gap-2 font-medium text-cocoa"><Phone size={15} className="text-gold" /> {o.customer_name} · {o.customer_phone}</p>
+                        {o.customer_email && <p className="text-cocoa/75">{o.customer_email}</p>}
+                        <p className="flex items-start gap-2 text-cocoa/75"><MapPin size={15} className="mt-0.5 flex-none text-gold" /> {o.delivery_address}</p>
+                        {o.special_instructions && (
+                          <p className="rounded-xl bg-white p-4 text-cocoa/75"><span className="font-semibold text-cocoa">Note:</span> {o.special_instructions}</p>
+                        )}
+                        <p className="text-xs text-cocoa/55">Payment: {o.payment_status === "paid" ? "Paid" : "Cash on delivery (collect on delivery)"}</p>
+                      </div>
+                    </div>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
