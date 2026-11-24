@@ -9,7 +9,6 @@ import { api } from "../lib/api";
 import { calcTotals, formatPrice } from "../lib/catalog";
 
 const PHONE_PATTERN = /^[+0-9 ()-]{7,20}$/;
-const GOOGLE_MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
 
 /**
  * Checkout: delivery details with saved addresses, map location picker, and order placement.
@@ -48,15 +47,17 @@ export default function Checkout() {
   const [editingAddress, setEditingAddress] = useState(null);
   const [savingAddress, setSavingAddress] = useState(false);
 
-  // Map state
+  // Map state (Leaflet)
   const [mapLoaded, setMapLoaded] = useState(false);
   const [mapCenter, setMapCenter] = useState({ lat: 20.5937, lng: 78.9629 }); // Default to India center
   const [mapMarker, setMapMarker] = useState(null);
   const mapRef = useRef(null);
   const mapInstance = useRef(null);
   const markerInstance = useRef(null);
-  const autocompleteInstance = useRef(null);
   const searchInputRef = useRef(null);
+  const searchDebounceRef = useRef(null);
+  const [searchResults, setSearchResults] = useState([]);
+  const [showSearchResults, setShowSearchResults] = useState(false);
 
   // Pre-fill from the signed-in customer's details
   useEffect(() => {
@@ -106,9 +107,9 @@ export default function Checkout() {
       setMapMarker({ lat: addr.latitude, lng: addr.longitude });
       // Update map if loaded
       if (mapInstance.current && markerInstance.current) {
-        const pos = { lat: addr.latitude, lng: addr.longitude };
-        mapInstance.current.setCenter(pos);
-        markerInstance.current.setPosition(pos);
+        const pos = [addr.latitude, addr.longitude];
+        mapInstance.current.setView(pos, 14);
+        markerInstance.current.setLatLng(pos);
       }
     }
   };
@@ -156,12 +157,14 @@ export default function Checkout() {
     }
     setShowAddressModal(true);
     // Load map after modal opens
-    setTimeout(() => loadGoogleMaps(), 100);
+    setTimeout(() => loadLeafletMap(), 100);
   };
 
   const closeAddressModal = () => {
     setShowAddressModal(false);
     setEditingAddress(null);
+    setSearchResults([]);
+    setShowSearchResults(false);
   };
 
   // Modal form state
@@ -180,127 +183,186 @@ export default function Checkout() {
     is_default: false,
   });
 
-  // Load Google Maps
-  const loadGoogleMaps = useCallback(async () => {
-    if (mapLoaded || !GOOGLE_MAPS_API_KEY) return;
-    if (window.google?.maps) {
-      setMapLoaded(true);
-      initMap();
-      return;
+  // Load Leaflet map
+  const loadLeafletMap = useCallback(async () => {
+    if (mapLoaded || mapInstance.current) return;
+
+    // Load Leaflet CSS if not already loaded
+    if (!document.querySelector('link[href*="leaflet.css"]')) {
+      const link = document.createElement("link");
+      link.rel = "stylesheet";
+      link.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
+      link.integrity = "sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=";
+      link.crossOrigin = "";
+      document.head.appendChild(link);
     }
-    try {
-      const script = document.createElement("script");
-      script.src = `https://maps.googleapis.com/maps/api/js?key=${GOOGLE_MAPS_API_KEY}&libraries=places`;
-      script.async = true;
-      script.defer = true;
-      script.onload = () => {
-        setMapLoaded(true);
-        initMap();
-      };
-      script.onerror = () => console.error("Failed to load Google Maps");
-      document.head.appendChild(script);
-    } catch (err) {
-      console.error("Google Maps load error:", err);
+
+    // Load Leaflet JS if not already loaded
+    if (!window.L) {
+      try {
+        await new Promise((resolve, reject) => {
+          const script = document.createElement("script");
+          script.src = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
+          script.integrity = "sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=";
+          script.crossOrigin = "";
+          script.async = true;
+          script.onload = resolve;
+          script.onerror = reject;
+          document.head.appendChild(script);
+        });
+      } catch (err) {
+        console.error("Failed to load Leaflet:", err);
+        return;
+      }
     }
+
+    initMap();
+    setMapLoaded(true);
   }, [mapLoaded]);
 
-  // Initialize map
+  // Initialize Leaflet map
   const initMap = () => {
     if (!mapRef.current || mapInstance.current) return;
     try {
-      mapInstance.current = new window.google.maps.Map(mapRef.current, {
-        center: mapCenter,
-        zoom: 14,
-        mapTypeControl: false,
-        streetViewControl: false,
-        fullscreenControl: false,
-        styles: [
-          { featureType: "poi", stylers: [{ visibility: "off" }] },
-          { featureType: "transit", stylers: [{ visibility: "off" }] },
-        ],
+      // Fix for Leaflet marker icon paths
+      delete window.L.Icon.Default.prototype._getIconUrl;
+      window.L.Icon.Default.mergeOptions({
+        iconRetinaUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
+        iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
+        shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
       });
 
-      markerInstance.current = new window.google.maps.Marker({
-        position: mapMarker || mapCenter,
-        map: mapInstance.current,
+      mapInstance.current = window.L.map(mapRef.current, {
+        center: [mapCenter.lat, mapCenter.lng],
+        zoom: 14,
+        zoomControl: true,
+      });
+
+      // Add OpenStreetMap tile layer
+      window.L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+        maxZoom: 19,
+      }).addTo(mapInstance.current);
+
+      // Create draggable marker
+      markerInstance.current = window.L.marker([mapMarker?.lat || mapCenter.lat, mapMarker?.lng || mapCenter.lng], {
         draggable: true,
         title: "Delivery location",
-      });
+      }).addTo(mapInstance.current);
 
       // Handle marker drag
-      markerInstance.current.addListener("dragend", (e) => {
-        const pos = e.latLng.toJSON();
-        setMapMarker(pos);
+      markerInstance.current.on("dragend", (e) => {
+        const pos = e.target.getLatLng();
+        setMapMarker({ lat: pos.lat, lng: pos.lng });
         setModalForm((f) => ({ ...f, latitude: pos.lat, longitude: pos.lng }));
-        reverseGeocode(pos);
+        reverseGeocode({ lat: pos.lat, lng: pos.lng });
       });
 
       // Handle map click
-      mapInstance.current.addListener("click", (e) => {
-        const pos = e.latLng.toJSON();
-        setMapMarker(pos);
-        if (markerInstance.current) markerInstance.current.setPosition(pos);
+      mapInstance.current.on("click", (e) => {
+        const pos = e.latlng;
+        setMapMarker({ lat: pos.lat, lng: pos.lng });
+        if (markerInstance.current) markerInstance.current.setLatLng(pos);
         setModalForm((f) => ({ ...f, latitude: pos.lat, longitude: pos.lng }));
-        reverseGeocode(pos);
+        reverseGeocode({ lat: pos.lat, lng: pos.lng });
       });
 
-      // Setup places autocomplete
-      if (searchInputRef.current) {
-        autocompleteInstance.current = new window.google.maps.places.Autocomplete(searchInputRef.current, {
-          types: ["geocode"],
-          componentRestrictions: { country: "in" },
-          fields: ["address_components", "geometry", "formatted_address"],
-        });
-
-        autocompleteInstance.current.addListener("place_changed", () => {
-          const place = autocompleteInstance.current.getPlace();
-          if (place.geometry?.location) {
-            const pos = place.geometry.location.toJSON();
-            setMapCenter(pos);
-            setMapMarker(pos);
-            if (mapInstance.current) mapInstance.current.setCenter(pos);
-            if (markerInstance.current) markerInstance.current.setPosition(pos);
-            setModalForm((f) => ({ ...f, latitude: pos.lat, longitude: pos.lng }));
-            fillAddressFromPlace(place);
-          }
-        });
+      // If we have a saved marker position, center the map
+      if (mapMarker) {
+        mapInstance.current.setView([mapMarker.lat, mapMarker.lng], 14);
+        if (markerInstance.current) markerInstance.current.setLatLng([mapMarker.lat, mapMarker.lng]);
       }
     } catch (err) {
       console.error("Map init error:", err);
     }
   };
 
-  // Reverse geocode to get address from lat/lng
-  const reverseGeocode = async (pos) => {
-    if (!window.google?.maps) return;
-    try {
-      const geocoder = new window.google.maps.Geocoder();
-      const result = await geocoder.geocode({ location: pos });
-      if (result.results[0]) {
-        fillAddressFromPlace(result.results[0]);
-      }
-    } catch (err) {
-      console.error("Reverse geocode error:", err);
+  // Search places using Photon API (komoot)
+  const searchPlaces = useCallback(async (query) => {
+    if (!query.trim() || query.length < 3) {
+      setSearchResults([]);
+      setShowSearchResults(false);
+      return;
     }
+
+    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+
+    searchDebounceRef.current = setTimeout(async () => {
+      try {
+        const response = await fetch(
+          `https://photon.komoot.io/api/?q=${encodeURIComponent(query)}&limit=5&osm_tag=!highway&bbox=68.1,6.5,97.4,37.1` // India bounding box
+        );
+        const data = await response.json();
+        if (data.features && data.features.length > 0) {
+          setSearchResults(data.features);
+          setShowSearchResults(true);
+        } else {
+          setSearchResults([]);
+          setShowSearchResults(false);
+        }
+      } catch (err) {
+        console.error("Photon search error:", err);
+        setSearchResults([]);
+        setShowSearchResults(false);
+      }
+    }, 300);
+  }, []);
+
+  // Handle search input change
+  const handleSearchChange = (e) => {
+    const value = e.target.value;
+    searchPlaces(value);
   };
 
-  // Fill form from place result
-  const fillAddressFromPlace = (place) => {
-    const components = place.address_components || [];
-    const getComponent = (type) => components.find(c => c.types.includes(type))?.long_name || "";
+  // Select a search result
+  const selectSearchResult = (feature) => {
+    const [lng, lat] = feature.geometry.coordinates;
+    const pos = { lat, lng };
+
+    setMapCenter(pos);
+    setMapMarker(pos);
+    if (mapInstance.current) mapInstance.current.setView([lat, lng], 14);
+    if (markerInstance.current) markerInstance.current.setLatLng([lat, lng]);
+
+    setModalForm((f) => ({ ...f, latitude: lat, longitude: lng }));
+    fillAddressFromPhoton(feature);
+
+    setSearchResults([]);
+    setShowSearchResults(false);
+    if (searchInputRef.current) searchInputRef.current.value = feature.properties.name || "";
+  };
+
+  // Fill form from Photon result
+  const fillAddressFromPhoton = (feature) => {
+    const props = feature.properties;
 
     const addressLine1 = [
-      getComponent("street_number"),
-      getComponent("route"),
+      props.housenumber,
+      props.street,
     ].filter(Boolean).join(" ");
 
     setModalForm((f) => ({
       ...f,
-      address_line1: addressLine1 || place.formatted_address || f.address_line1,
-      city: getComponent("locality") || getComponent("administrative_area_level_2") || f.city,
-      state: getComponent("administrative_area_level_1") || f.state,
-      pincode: getComponent("postal_code") || f.pincode,
+      address_line1: addressLine1 || props.name || f.address_line1,
+      city: props.city || props.town || props.village || props.municipality || f.city,
+      state: props.state || f.state,
+      pincode: props.postcode || f.pincode,
     }));
+  };
+
+  // Reverse geocode using Photon API
+  const reverseGeocode = async (pos) => {
+    try {
+      const response = await fetch(
+        `https://photon.komoot.io/reverse?lat=${pos.lat}&lon=${pos.lng}&limit=1`
+      );
+      const data = await response.json();
+      if (data.features && data.features.length > 0) {
+        fillAddressFromPhoton(data.features[0]);
+      }
+    } catch (err) {
+      console.error("Reverse geocode error:", err);
+    }
   };
 
   // Get current location
@@ -314,8 +376,8 @@ export default function Checkout() {
         const coords = { lat: pos.coords.latitude, lng: pos.coords.longitude };
         setMapCenter(coords);
         setMapMarker(coords);
-        if (mapInstance.current) mapInstance.current.setCenter(coords);
-        if (markerInstance.current) markerInstance.current.setPosition(coords);
+        if (mapInstance.current) mapInstance.current.setView([coords.lat, coords.lng], 14);
+        if (markerInstance.current) markerInstance.current.setLatLng([coords.lat, coords.lng]);
         setModalForm((f) => ({ ...f, latitude: coords.lat, longitude: coords.lng }));
         reverseGeocode(coords);
       },
@@ -866,19 +928,43 @@ export default function Checkout() {
                     <Navigation2 size={14} /> Current location
                   </button>
                 </div>
-                <div className="mb-3">
+                <div className="mb-3 relative">
                   <label className="sr-only" htmlFor="mapSearch">Search place</label>
-                  <div className="relative">
-                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-cocoa/40" />
-                    <input
-                      ref={searchInputRef}
-                      id="mapSearch"
-                      type="text"
-                      placeholder="Search for a place (e.g., Connaught Place, Delhi)..."
-                      className="field pl-10"
-                      autoComplete="off"
-                    />
-                  </div>
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-cocoa/40" />
+                  <input
+                    ref={searchInputRef}
+                    id="mapSearch"
+                    type="text"
+                    value={searchInputRef.current?.value || ""}
+                    onChange={handleSearchChange}
+                    onFocus={() => searchResults.length > 0 && setShowSearchResults(true)}
+                    placeholder="Search for a place (e.g., Connaught Place, Delhi)..."
+                    className="field pl-10"
+                    autoComplete="off"
+                  />
+                  {showSearchResults && searchResults.length > 0 && (
+                    <div className="absolute z-10 w-full mt-1 bg-white rounded-xl border border-petal shadow-lg max-h-60 overflow-y-auto">
+                      {searchResults.map((feature, idx) => (
+                        <button
+                          key={idx}
+                          type="button"
+                          onClick={() => selectSearchResult(feature)}
+                          className="w-full px-4 py-3 text-left hover:bg-petal transition-colors"
+                        >
+                          <p className="font-medium text-cocoa">{feature.properties.name}</p>
+                          <p className="text-xs text-cocoa/50 truncate">
+                            {[
+                              feature.properties.housenumber,
+                              feature.properties.street,
+                              feature.properties.city,
+                              feature.properties.state,
+                              feature.properties.postcode,
+                            ].filter(Boolean).join(", ")}
+                          </p>
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
                 <div
                   ref={mapRef}
@@ -887,18 +973,10 @@ export default function Checkout() {
                 >
                   {!mapLoaded && (
                     <div className="flex h-full items-center justify-center bg-petal/30">
-                      {GOOGLE_MAPS_API_KEY ? (
-                        <div className="flex flex-col items-center gap-3 text-cocoa/60">
-                          <div className="animate-spin rounded-full h-8 w-8 border-2 border-rosewood border-t-transparent" />
-                          <p className="text-sm">Loading map...</p>
-                        </div>
-                      ) : (
-                        <div className="text-center px-6">
-                          <MapPin className="mx-auto mb-2 h-10 w-10 text-petal" strokeWidth={1.2} />
-                          <p className="text-sm">Google Maps API key not configured</p>
-                          <p className="text-xs text-cocoa/50">Add VITE_GOOGLE_MAPS_API_KEY to enable map</p>
-                        </div>
-                      )}
+                      <div className="flex flex-col items-center gap-3 text-cocoa/60">
+                        <div className="animate-spin rounded-full h-8 w-8 border-2 border-rosewood border-t-transparent" />
+                        <p className="text-sm">Loading map...</p>
+                      </div>
                     </div>
                   )}
                 </div>
