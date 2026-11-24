@@ -2,6 +2,7 @@ import {
   useEffect,
   useState,
   useCallback,
+  useLayoutEffect,
   createContext,
   useContext,
   useMemo,
@@ -19,23 +20,20 @@ import {
   getAdditionalUserInfo,
 } from "firebase/auth";
 import { auth, hasFirebase } from "../lib/firebase";
-import { supabase, hasSupabase } from "../lib/supabase/client";
 import { api, setIdTokenProvider } from "../lib/api";
 
 const AuthContext = createContext(null);
 
 /**
- * Email that is granted admin access on the frontend regardless of Supabase
- * user_roles. Only this email can be an admin via this path — no one else can
- * register with the same email, so it is a stable admin key.
+ * Email granted admin access on the frontend. The server grants the same access
+ * only when Firebase has verified that the email belongs to the signed-in user.
  */
 const ADMIN_EMAIL = "utkarshavasthi001@gmail.com";
 
 /**
  * Demo (fake) sign-in is OFF unless VITE_ALLOW_DEMO_AUTH=true is set on purpose.
  * Without this guard, a missing Firebase config silently accepted ANY email and
- * password as an in-memory "customer" account, which logged users out on refresh
- * and hid the admin panel.
+ * password as an in-memory "customer" account.
  */
 const ALLOW_DEMO_AUTH = import.meta.env.VITE_ALLOW_DEMO_AUTH === "true";
 
@@ -45,50 +43,51 @@ const FIREBASE_CONFIG_MESSAGE =
 /**
  * Firebase Authentication context for Bhumika Cosmetic.
  *
- * Firebase replaces Supabase Authentication only. Supabase remains the
- * database. Firebase UIDs are mapped to profiles via the `firebase_uid`
- * column (migration 004).
+ * Firebase replaces Supabase Authentication only. Supabase remains the database.
+ * Firebase UIDs are mapped to profiles via the `firebase_uid` column (migration 004).
  *
- * All password handling is delegated to Firebase — we never store or
- * transmit plaintext passwords, and we never implement authentication
- * manually.
+ * All password handling is delegated to Firebase. User-scoped writes go through
+ * /api endpoints that verify the Firebase ID token. The browser never writes to
+ * Supabase directly, because Firebase users have no Supabase session for RLS.
  *
- * Server-side trust: user-scoped writes (profile, cart, wishlist, bookings)
- * go through /api endpoints that verify the Firebase ID token and resolve
- * the profile via firebase_uid — we never trust a frontend-supplied user ID,
- * and RLS is never disabled or weakened.
+ * Exposed state:
+ *   loading     - true until Firebase reports whether someone is signed in
+ *   rolesReady  - true once the profile and roles for the signed-in user have loaded
+ *   profile/roles - loaded from /api/profile after sign-in (in the background)
  */
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [profile, setProfile] = useState(null);
   const [roles, setRoles] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [rolesReady, setRolesReady] = useState(false);
   const [demoMode, setDemoMode] = useState(!hasFirebase && ALLOW_DEMO_AUTH);
-  const [idToken, setIdToken] = useState(null);
 
   /**
    * Loads the signed-in customer's profile and roles from the server (/api/profile).
    * The server verifies the Firebase token and resolves roles with the service role.
-   * Reading these from the browser would depend on Supabase RLS, which cannot see
-   * Firebase users, so staff roles would silently disappear.
    */
   const loadProfileAndRoles = useCallback(async (firebaseUser) => {
-    const adminFallback = () =>
-      setRoles(firebaseUser?.email === ADMIN_EMAIL ? ["owner", "manager", "staff"] : []);
-
     if (!firebaseUser) {
       setProfile(null);
       setRoles([]);
+      setRolesReady(true);
       return;
     }
+
+    setRolesReady(false);
     try {
       const data = await api.get("/api/profile");
       setProfile(data.profile || null);
       setRoles(data.roles || []);
     } catch {
-      // Server unreachable or no profile yet: keep the session, grant only the admin-email fallback.
+      // Server unreachable or no profile yet: keep the session. Only the verified
+      // admin email gets the fallback role.
       setProfile(null);
-      adminFallback();
+      const isVerifiedAdmin = firebaseUser.email === ADMIN_EMAIL && firebaseUser.emailVerified;
+      setRoles(isVerifiedAdmin ? ["owner", "manager", "staff"] : []);
+    } finally {
+      setRolesReady(true);
     }
   }, []);
 
@@ -99,49 +98,38 @@ export function AuthProvider({ children }) {
       } else {
         console.error(FIREBASE_CONFIG_MESSAGE);
       }
+      setRolesReady(true);
       setLoading(false);
       return;
     }
 
-    setLoading(true);
-    const unsub = onAuthStateChanged(auth, async (firebaseUser) => {
+    const unsub = onAuthStateChanged(auth, (firebaseUser) => {
       setUser(firebaseUser ?? null);
-      if (firebaseUser) {
-        try {
-          const token = await firebaseUser.getIdToken(true);
-          setIdToken(token);
-        } catch {
-          setIdToken(null);
-        }
-        await loadProfileAndRoles(firebaseUser);
-      } else {
-        setProfile(null);
-        setRoles([]);
-        setIdToken(null);
-      }
+      // The page can render now. Roles follow in the background.
       setLoading(false);
+      loadProfileAndRoles(firebaseUser ?? null);
     });
 
     return () => unsub();
   }, [loadProfileAndRoles]);
 
+  /** Firebase's cached token. It renews itself when close to expiry. */
   const getIdToken = useCallback(async () => {
     if (!auth || !auth.currentUser) return null;
     try {
-      const token = await auth.currentUser.getIdToken(true);
-      setIdToken(token);
-      return token;
+      return await auth.currentUser.getIdToken();
     } catch {
       return null;
     }
-  }, [auth]);
+  }, []);
 
-  // Expose the token provider so /api calls can attach the Firebase ID token.
-  setIdTokenProvider(getIdToken);
+  // Register the token provider before any child effect makes an API call.
+  useLayoutEffect(() => {
+    setIdTokenProvider(getIdToken);
+  }, [getIdToken]);
 
   // Map Firebase error codes to user-friendly messages without weakening
-  // account-enumeration protection. Firebase may not reveal whether an email
-  // is registered; we keep messages generic where the SDK does.
+  // account-enumeration protection.
   const mapAuthError = (err) => {
     const code = err.code || "";
     const message = err.message || "Something went wrong. Please try again.";
@@ -149,7 +137,6 @@ export function AuthProvider({ children }) {
       case "auth/user-not-found":
         return "This email address is not registered. Please create an account to continue.";
       case "auth/invalid-credential":
-        // Firebase does not reveal whether the email exists, so do not guess.
         return "Incorrect email or password. Please try again.";
       case "auth/wrong-password":
         return "Incorrect password. Please try again.";
@@ -172,103 +159,54 @@ export function AuthProvider({ children }) {
     }
   };
 
+  const demoUser = (email, fullName, emailVerified) => ({
+    uid: "demo-user",
+    email,
+    displayName: fullName,
+    user_metadata: { full_name: fullName },
+    emailVerified,
+    getIdToken: async () => "demo-token",
+  });
+
   const signUp = useCallback(
     async ({ email, password, fullName }) => {
       if (demoMode) {
-        const demoUser = {
-          uid: "demo-user",
-          email,
-          user_metadata: { full_name: fullName },
-          emailVerified: false,
-          getIdToken: async () => "demo-token",
-        };
-        setUser(demoUser);
-        setProfile({
-          id: "demo-user",
-          full_name: fullName,
-          email,
-          firebase_uid: "demo-user",
-        });
+        const u = demoUser(email, fullName, false);
+        setUser(u);
+        setProfile({ id: "demo-user", full_name: fullName, email, firebase_uid: "demo-user" });
         setRoles(["customer"]);
-        setIdToken("demo-token");
-        return { user: demoUser };
+        setRolesReady(true);
+        return { user: u };
       }
       if (!auth) throw new Error(FIREBASE_CONFIG_MESSAGE);
 
-      // Create the Firebase account.
-      const { user: firebaseUser } = await createUserWithEmailAndPassword(
-        auth,
-        email,
-        password
-      );
-
-      // Set display name on the Firebase account.
+      const { user: firebaseUser } = await createUserWithEmailAndPassword(auth, email, password);
       await firebaseUpdateProfile(firebaseUser, { displayName: fullName });
-
-      // Send verification email (do not falsely show as verified).
       await sendEmailVerification(firebaseUser);
-
-      // Refresh to reflect emailVerified state.
       await firebaseUser.reload();
 
-      // Create/link a profile row keyed by Firebase UID.
-      // Do not fail signup if profile creation fails — the profile can be
-      // created on-demand server-side via authenticateRequest.
-      if (hasSupabase && supabase) {
-        try {
-          await supabase.from("profiles").insert({
-            id: firebaseUser.uid,
-            full_name: fullName,
-            email,
-            firebase_uid: firebaseUser.uid,
-            role: "customer",
-          });
-        } catch {
-          // Profile may already exist; ignore and continue.
-        }
-      }
-
-      const token = await firebaseUser.getIdToken(true);
-      setIdToken(token);
+      // The server creates the profile row keyed by the verified Firebase UID.
       setUser(firebaseUser);
       await loadProfileAndRoles(firebaseUser);
-
       return { user: firebaseUser };
     },
-    [auth, demoMode, loadProfileAndRoles]
+    [demoMode, loadProfileAndRoles]
   );
 
   const signIn = useCallback(
     async ({ email, password }) => {
       if (demoMode) {
-        const demoUser = {
-          uid: "demo-user",
-          email,
-          user_metadata: { full_name: "" },
-          emailVerified: true,
-          getIdToken: async () => "demo-token",
-        };
-        setUser(demoUser);
-        setProfile({
-          id: "demo-user",
-          full_name: "",
-          email,
-          firebase_uid: "demo-user",
-        });
+        const u = demoUser(email, "", true);
+        setUser(u);
+        setProfile({ id: "demo-user", full_name: "", email, firebase_uid: "demo-user" });
         setRoles(["customer"]);
-        setIdToken("demo-token");
-        return { user: demoUser };
+        setRolesReady(true);
+        return { user: u };
       }
       if (!auth) throw new Error(FIREBASE_CONFIG_MESSAGE);
 
       try {
-        const { user: firebaseUser } = await signInWithEmailAndPassword(
-          auth,
-          email,
-          password
-        );
-        const token = await firebaseUser.getIdToken(true);
-        setIdToken(token);
+        const { user: firebaseUser } = await signInWithEmailAndPassword(auth, email, password);
         setUser(firebaseUser);
         await loadProfileAndRoles(firebaseUser);
         return { user: firebaseUser };
@@ -276,7 +214,7 @@ export function AuthProvider({ children }) {
         throw new Error(mapAuthError(err));
       }
     },
-    [auth, demoMode, loadProfileAndRoles, mapAuthError]
+    [demoMode, loadProfileAndRoles]
   );
 
   /**
@@ -310,26 +248,10 @@ export function AuthProvider({ children }) {
     const firebaseUser = result.user;
     const isNewUser = getAdditionalUserInfo(result)?.isNewUser === true;
 
-    if (isNewUser && hasSupabase && supabase) {
-      try {
-        await supabase.from("profiles").insert({
-          id: firebaseUser.uid,
-          full_name: firebaseUser.displayName || "",
-          email: firebaseUser.email || "",
-          firebase_uid: firebaseUser.uid,
-          role: "customer",
-        });
-      } catch {
-        // Profile is also created on demand server-side; ignore.
-      }
-    }
-
-    const token = await firebaseUser.getIdToken(true);
-    setIdToken(token);
     setUser(firebaseUser);
     await loadProfileAndRoles(firebaseUser);
     return { user: firebaseUser, isNewUser };
-  }, [auth, demoMode, loadProfileAndRoles, mapAuthError]);
+  }, [demoMode, loadProfileAndRoles]);
 
   /** Save the username chosen after registration. Server checks uniqueness. */
   const setUsername = useCallback(
@@ -349,51 +271,41 @@ export function AuthProvider({ children }) {
     setUser(null);
     setProfile(null);
     setRoles([]);
-    setIdToken(null);
-  }, [auth, demoMode]);
+    setRolesReady(true);
+  }, [demoMode]);
 
+  /** Update the signed-in customer's details through the API (server-verified). */
   const updateProfile = useCallback(
     async (updates) => {
       if (!user) throw new Error("Not authenticated");
-      if (!hasSupabase || !supabase) {
-        setProfile({ ...profile, ...updates });
+      if (demoMode) {
+        setProfile((p) => ({ ...p, ...updates }));
         return profile;
       }
-      const { data, error } = await supabase
-        .from("profiles")
-        .update({
-          ...updates,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", profile?.id || user.uid)
-        .select()
-        .single();
-      if (error) throw error;
-      setProfile(data);
-      return data;
+      const { profile: saved } = await api.put("/api/profile", updates);
+      setProfile(saved);
+      return saved;
     },
-    [user, profile, hasSupabase, supabase]
+    [user, profile, demoMode]
   );
 
   const resendVerification = useCallback(async () => {
     if (!auth || !auth.currentUser) throw new Error("Not authenticated");
     await sendEmailVerification(auth.currentUser);
     return true;
-  }, [auth]);
+  }, []);
 
   const sendPasswordReset = useCallback(async (email) => {
     if (!auth) throw new Error("Firebase is not configured.");
-    // Firebase sends the reset email; if it fails we surface a friendly message
-    // and never pretend an email was sent (PHASE 5).
     await sendPasswordResetEmail(auth, email);
     return true;
-  }, [auth]);
+  }, []);
 
   const checkVerification = useCallback(async () => {
     if (!auth || !auth.currentUser) return false;
     await auth.currentUser.reload();
     return auth.currentUser.emailVerified === true;
-  }, [auth]);
+  }, []);
 
   const value = useMemo(
     () => ({
@@ -401,14 +313,11 @@ export function AuthProvider({ children }) {
       profile,
       roles,
       loading,
+      rolesReady,
       demoMode,
-      idToken,
       isAuthenticated: !!user,
       isAdmin: roles.includes("owner") || roles.includes("manager"),
-      isStaff:
-        roles.includes("owner") ||
-        roles.includes("manager") ||
-        roles.includes("staff"),
+      isStaff: roles.includes("owner") || roles.includes("manager") || roles.includes("staff"),
       getIdToken,
       signUp,
       signIn,
@@ -426,8 +335,8 @@ export function AuthProvider({ children }) {
       profile,
       roles,
       loading,
+      rolesReady,
       demoMode,
-      idToken,
       getIdToken,
       signUp,
       signIn,
@@ -441,9 +350,7 @@ export function AuthProvider({ children }) {
     ]
   );
 
-  return (
-    <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
-  );
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
 export function useAuth() {

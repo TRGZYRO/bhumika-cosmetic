@@ -20,8 +20,22 @@ const EMPTY = {
   is_featured: false,
 };
 
+/** Text-safe trim: saved products often hold null for empty fields. */
+const t = (value) => String(value ?? "").trim();
+
+/** Starts the form from the product, keeping the empty default for any field stored as null. */
+function formFromProduct(initial) {
+  const base = { ...EMPTY };
+  if (initial) {
+    for (const key of Object.keys(EMPTY)) {
+      if (initial[key] !== null && initial[key] !== undefined) base[key] = initial[key];
+    }
+  }
+  return base;
+}
+
 function ProductForm({ initial, categories, onCancel, onSaved }) {
-  const [form, setForm] = useState(() => ({ ...EMPTY, ...initial }));
+  const [form, setForm] = useState(() => formFromProduct(initial));
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState("");
@@ -47,22 +61,22 @@ function ProductForm({ initial, categories, onCancel, onSaved }) {
   async function handleSubmit(e) {
     e.preventDefault();
     setError("");
-    if (!form.name.trim()) return setError("Please enter a product name.");
-    if (form.base_price === "" || Number(form.base_price) < 0) return setError("Please enter a valid price.");
-    if (form.compare_at_price !== "" && Number(form.compare_at_price) < Number(form.base_price)) {
+    if (!t(form.name)) return setError("Please enter a product name.");
+    if (t(form.base_price) === "" || Number(form.base_price) < 0) return setError("Please enter a valid price.");
+    if (t(form.compare_at_price) !== "" && Number(form.compare_at_price) < Number(form.base_price)) {
       return setError("The MRP should be the same as or higher than the price.");
     }
 
     const payload = {
-      name: form.name.trim(),
-      brand: form.brand.trim() || null,
+      name: t(form.name),
+      brand: t(form.brand) || null,
       category_id: form.category_id || null,
-      description: form.description.trim() || null,
-      how_to_use: form.how_to_use.trim() || null,
-      ingredients: form.ingredients.trim() || null,
-      size_label: form.size_label.trim() || null,
+      description: t(form.description) || null,
+      how_to_use: t(form.how_to_use) || null,
+      ingredients: t(form.ingredients) || null,
+      size_label: t(form.size_label) || null,
       base_price: Number(form.base_price),
-      compare_at_price: form.compare_at_price === "" ? null : Number(form.compare_at_price),
+      compare_at_price: t(form.compare_at_price) === "" ? null : Number(form.compare_at_price),
       stock_quantity: Math.max(0, Math.floor(Number(form.stock_quantity) || 0)),
       image_url: form.image_url || null,
       is_available: Boolean(form.is_available),

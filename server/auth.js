@@ -97,9 +97,11 @@ export async function authenticateRequest(req) {
     .eq("user_id", profile.id);
   const roleList = (roles || []).map((x) => x.role);
 
-  // Frontend admin email always wins — grant full admin access server-side too,
-  // even if the profile has no user_roles row yet.
-  if (decoded.email === ADMIN_EMAIL && !roleList.length) {
+  // The admin email grants admin access only when Firebase has verified that the
+  // email belongs to the caller. Without this check, anyone could register an
+  // unverified account with that address and become an admin.
+  const isVerifiedAdminEmail = decoded.email === ADMIN_EMAIL && decoded.emailVerified === true;
+  if (isVerifiedAdminEmail && !roleList.length) {
     roleList.push("owner", "manager", "staff");
   }
 

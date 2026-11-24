@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ChevronDown, ChevronUp, Phone, MapPin } from "lucide-react";
+import { ChevronDown, ChevronUp, Phone, MapPin, Trash2 } from "lucide-react";
 import { adminDb } from "../../lib/adminDb";
 import { formatPrice } from "../../lib/catalog";
 
@@ -62,9 +62,38 @@ export default function AdminOrders() {
     }
   }
 
+  async function deleteOrder(order) {
+    if (!window.confirm(`Delete cancelled order ${order.order_number}? This cannot be undone.`)) return;
+    setSavingId(order.id);
+    setError("");
+    try {
+      await adminDb.deleteOrder(order.id);
+      setOrders((list) => list.filter((o) => o.id !== order.id));
+      if (openId === order.id) setOpenId(null);
+    } catch (err) {
+      setError(err.message || "Could not delete the order.");
+    } finally {
+      setSavingId(null);
+    }
+  }
+
+  async function deleteAllCancelled() {
+    const n = counts.cancelled || 0;
+    if (n === 0) return;
+    if (!window.confirm(`Delete all ${n} cancelled order${n === 1 ? "" : "s"}? This cannot be undone.`)) return;
+    setError("");
+    try {
+      await adminDb.deleteCancelledOrders();
+      setOrders((list) => list.filter((o) => o.order_status !== "cancelled"));
+      setOpenId(null);
+    } catch (err) {
+      setError(err.message || "Could not delete the cancelled orders.");
+    }
+  }
+
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap gap-2" role="group" aria-label="Filter orders by status">
+      <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Filter orders by status">
         {[{ key: "all", label: "All" }, ...STATUSES].map((s) => (
           <button
             key={s.key}
@@ -79,6 +108,21 @@ export default function AdminOrders() {
           </button>
         ))}
       </div>
+
+      {counts.cancelled > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-white p-4 ring-1 ring-petal">
+          <p className="text-sm text-cocoa/70">
+            {counts.cancelled} cancelled order{counts.cancelled === 1 ? "" : "s"}. Cancelled orders can be removed from the list.
+          </p>
+          <button
+            type="button"
+            onClick={deleteAllCancelled}
+            className="inline-flex items-center gap-2 rounded-full bg-[#b42318] px-4 py-2 text-sm font-semibold text-white hover:opacity-90"
+          >
+            <Trash2 size={15} /> Delete all cancelled
+          </button>
+        </div>
+      )}
 
       {error && <p role="alert" className="rounded-xl border border-[#b42318]/30 bg-[#b42318]/5 p-4 text-sm text-[#b42318]">{error}</p>}
 
@@ -122,6 +166,17 @@ export default function AdminOrders() {
                     >
                       {STATUSES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
                     </select>
+                    {o.order_status === "cancelled" && (
+                      <button
+                        type="button"
+                        onClick={() => deleteOrder(o)}
+                        disabled={savingId === o.id}
+                        aria-label={`Delete cancelled order ${o.order_number}`}
+                        className="inline-flex items-center gap-1.5 rounded-full border border-[#b42318]/40 px-3 py-2 text-sm font-semibold text-[#b42318] hover:bg-[#b42318]/5 disabled:opacity-60"
+                      >
+                        <Trash2 size={15} /> Delete
+                      </button>
+                    )}
                   </div>
 
                   {open && (

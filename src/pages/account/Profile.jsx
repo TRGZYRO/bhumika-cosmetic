@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { Mail, Phone, MapPin, User, Package, LogOut, CheckCircle2, Plus, Edit2, Trash2, Home, Building, Navigation2 } from "lucide-react";
+import { Mail, Phone, MapPin, User, Package, LogOut, CheckCircle2, Plus, Edit2, Trash2, Home, Building, Navigation2, X } from "lucide-react";
 import { useAuth } from "../../contexts/AuthContext";
 import { api } from "../../lib/api";
 import MyOrders from "../../components/MyOrders";
@@ -11,7 +11,7 @@ import Reveal from "../../components/Reveal";
  * address used at checkout), and the customer's order history.
  */
 export default function ProfilePage() {
-  const { user, profile, signOut } = useAuth();
+  const { user, profile, signOut, isAuthenticated } = useAuth();
   const navigate = useNavigate();
   const [tab, setTab] = useState("details");
   const [form, setForm] = useState({
@@ -364,7 +364,7 @@ export default function ProfilePage() {
                                 <p className="mt-1 text-xs text-cocoa/50">📍 {addr.latitude.toFixed(6)}, {addr.longitude.toFixed(6)}</p>
                               )}
                             </div>
-                            <div className="flex flex-col gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <div className="flex flex-col gap-1">
                               {!addr.is_default && (
                                 <button
                                   type="button"

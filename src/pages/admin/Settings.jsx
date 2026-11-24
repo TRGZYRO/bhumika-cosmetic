@@ -32,7 +32,9 @@ export default function AdminSettings() {
       .getSettings()
       .then(({ data }) => {
         if (data) {
-          setForm({ ...EMPTY, ...data, shop_name: data.shop_name || "", delivery_charge: data.delivery_charge ?? 0, free_delivery_above: data.free_delivery_above ?? 0 });
+          // Saved fields can be null in the database. Keep the empty default for those.
+          const clean = Object.fromEntries(Object.keys(EMPTY).map((k) => [k, data[k] ?? EMPTY[k]]));
+          setForm({ ...clean, id: data.id, shop_name: data.shop_name || "", delivery_charge: data.delivery_charge ?? 0, free_delivery_above: data.free_delivery_above ?? 0 });
           setTaxPercent(String(Math.round(Number(data.tax_rate || 0) * 10000) / 100));
         }
       })
@@ -46,16 +48,16 @@ export default function AdminSettings() {
     e.preventDefault();
     setError("");
     setSaved(false);
-    if (!form.shop_name.trim()) return setError("Please enter the shop name.");
+    if (!String(form.shop_name ?? "").trim()) return setError("Please enter the shop name.");
     setSaving(true);
     try {
       const payload = {
         id: form.id,
-        shop_name: form.shop_name.trim(),
-        tagline: form.tagline.trim(),
-        address: form.address.trim(),
-        phone: form.phone.trim(),
-        email: form.email.trim(),
+        shop_name: String(form.shop_name ?? "").trim(),
+        tagline: String(form.tagline ?? "").trim(),
+        address: String(form.address ?? "").trim(),
+        phone: String(form.phone ?? "").trim(),
+        email: String(form.email ?? "").trim(),
         currency: "INR",
         delivery_charge: Math.max(0, Number(form.delivery_charge) || 0),
         free_delivery_above: Math.max(0, Number(form.free_delivery_above) || 0),

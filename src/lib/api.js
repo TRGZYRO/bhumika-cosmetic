@@ -1,9 +1,13 @@
 /**
  * Client-side API helper for Bhumika Cosmetic.
  *
- * Every call attaches the current Firebase ID token (from AuthContext) so the
- * server can verify the caller and resolve their profile via firebase_uid.
- * Frontend code never touches Supabase directly for user-scoped data.
+ * Every call attaches the current Firebase ID token so the server can verify the
+ * caller and resolve their profile via firebase_uid. Frontend code never touches
+ * Supabase directly for user-scoped data.
+ *
+ * Tokens are read from Firebase's cache (no forced refresh). Firebase renews an
+ * expiring token on its own, so forcing a refresh on every request only added a
+ * network round trip to every page.
  *
  * Base URL is relative (same origin) so it works on localhost and Vercel.
  */
@@ -16,44 +20,63 @@ export function setIdTokenProvider(provider) {
   getIdToken = provider;
 }
 
-async function request(path, options = {}) {
-  let idToken = await getIdToken();
+/** Resolves to fallback if the promise takes longer than ms (so a stalled call cannot hang the UI). */
+function withTimeout(promise, ms, fallback) {
+  let timer;
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(fallback), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
 
-  // Fallback: if the provider hasn't returned a token yet, try Firebase directly.
-  if (!idToken) {
-    try {
-      const { auth, hasFirebase } = await import("../lib/firebase");
-      if (hasFirebase && auth && auth.currentUser) {
-        idToken = await auth.currentUser.getIdToken(true);
-      } else {
-        console.debug("[api] no auth.currentUser — hasFirebase:", hasFirebase, "auth:", !!auth, "currentUser:", auth?.currentUser);
-      }
-    } catch {
-      // ignore — no token available
-      console.debug("[api] Firebase fallback threw");
+async function resolveIdToken() {
+  // Never let a slow token lookup block the request for long. Without a token the
+  // request still goes out, and the server treats it as a guest.
+  const fromProvider = await withTimeout(Promise.resolve().then(getIdToken), 5000, null);
+  if (fromProvider) return fromProvider;
+
+  // Fallback: the provider has not been registered yet. Read Firebase directly.
+  try {
+    const { auth, hasFirebase } = await import("../lib/firebase");
+    if (hasFirebase && auth?.currentUser) {
+      return await auth.currentUser.getIdToken();
     }
+  } catch {
+    /* no token available: the request goes out unauthenticated */
   }
+  return null;
+}
+
+async function request(path, options = {}) {
+  const { timeoutMs = 30000, timeoutMessage, ...fetchOptions } = options;
+  const idToken = await resolveIdToken();
 
   const headers = {
     "Content-Type": "application/json",
     ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
-    ...options.headers,
+    ...fetchOptions.headers,
   };
 
-  if (!idToken) {
-    console.debug("[api] request", path, "— NO idToken attached");
-  } else {
-    console.debug("[api] request", path, "— idToken attached (len", idToken.length, ")");
+  // Give up on a request that never answers, so the shopper is not stuck on a spinner.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let res;
+  try {
+    res = await fetch(`${API_BASE}${path}`, {
+      ...fetchOptions,
+      headers,
+      signal: controller.signal,
+    });
+  } catch (err) {
+    if (err?.name === "AbortError") {
+      throw new Error(timeoutMessage || "The request took too long. Please check your connection and try again.");
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
   }
 
-  const res = await fetch(`${API_BASE}${path}`, {
-    ...options,
-    headers,
-  });
-
   if (!res.ok) {
-    // Await the body: res.json() returns a Promise, so reading .error
-    // without awaiting always fell back to the generic status message.
     let body = null;
     try {
       body = await res.json();
@@ -69,9 +92,8 @@ async function request(path, options = {}) {
 
 export const api = {
   get: (path) => request(path, { method: "GET" }),
-  post: (path, body) =>
-    request(path, { method: "POST", body: JSON.stringify(body) }),
-  put: (path, body) =>
-    request(path, { method: "PUT", body: JSON.stringify(body) }),
+  post: (path, body, options = {}) => request(path, { ...options, method: "POST", body: JSON.stringify(body) }),
+  put: (path, body) => request(path, { method: "PUT", body: JSON.stringify(body) }),
+  patch: (path, body) => request(path, { method: "PATCH", body: JSON.stringify(body) }),
   del: (path) => request(path, { method: "DELETE" }),
 };

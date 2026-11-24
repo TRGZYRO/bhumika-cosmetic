@@ -29,6 +29,13 @@ function makeOrderNumber() {
   return `BC-${stamp}${rand}`;
 }
 
+/** Put reserved stock back, in parallel. Used when an order cannot be completed. */
+async function restoreStock(admin, reserved) {
+  await Promise.all(
+    reserved.map((r) => admin.from("products").update({ stock_quantity: r.previous }).eq("id", r.id))
+  );
+}
+
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
@@ -75,20 +82,21 @@ export default async function handler(req, res) {
   if (requested.size === 0) return sendError(res, 400, "Your cart is empty.");
 
   try {
-    // Work out who is ordering, if they are signed in. Guests are fine.
-    let profileId = null;
-    if (req.headers.authorization) {
-      const auth = await authenticateRequest(req).catch(() => null);
-      if (auth?.ok) profileId = auth.profile.id;
-    }
-
-    // Load the live products, prices and stock from the database.
+    // The three lookups do not depend on each other, so they run at the same time:
+    // who is ordering (if signed in), the live products, and the shop settings.
     const ids = [...requested.keys()];
-    const { data: products, error: productsErr } = await admin
-      .from("products")
-      .select("id, name, size_label, base_price, stock_quantity, is_available")
-      .in("id", ids);
-    if (productsErr) throw productsErr;
+    const [auth, productsRes, settingsRes] = await Promise.all([
+      req.headers.authorization ? authenticateRequest(req).catch(() => null) : null,
+      admin
+        .from("products")
+        .select("id, name, size_label, base_price, stock_quantity, is_available")
+        .in("id", ids),
+      admin.from("business_settings").select("*").limit(1).maybeSingle(),
+    ]);
+    const profileId = auth?.ok ? auth.profile.id : null;
+    if (productsRes.error) throw productsRes.error;
+    const products = productsRes.data;
+    const settings = settingsRes.data;
 
     const byId = new Map((products || []).map((p) => [p.id, p]));
     const lines = [];
@@ -114,7 +122,6 @@ export default async function handler(req, res) {
     }
 
     // Shop settings decide delivery and tax.
-    const { data: settings } = await admin.from("business_settings").select("*").limit(1).maybeSingle();
     const subtotal = lines.reduce((sum, l) => sum + l.total, 0);
     const freeAbove = Number(settings?.free_delivery_above || 0);
     const deliveryCharge =
@@ -122,25 +129,30 @@ export default async function handler(req, res) {
     const taxAmount = Math.round(subtotal * Number(settings?.tax_rate || 0) * 100) / 100;
     const total = Math.round((subtotal + deliveryCharge + taxAmount) * 100) / 100;
 
-    // Reserve stock. Each update is conditional, so a stock check cannot be overtaken by a racing order.
-    const reserved = [];
-    for (const line of lines) {
-      const remaining = line.product.stock_quantity - line.quantity;
-      const { data: updated, error: stockErr } = await admin
-        .from("products")
-        .update({ stock_quantity: remaining, updated_at: new Date().toISOString() })
-        .eq("id", line.product.id)
-        .eq("stock_quantity", line.product.stock_quantity)
-        .select("id")
-        .maybeSingle();
-      if (stockErr || !updated) {
-        // Put back anything already reserved in this order.
-        for (const r of reserved) {
-          await admin.from("products").update({ stock_quantity: r.previous }).eq("id", r.id);
-        }
-        return sendError(res, 409, `${line.product.name} just sold out or changed. Please review your cart.`);
-      }
-      reserved.push({ id: line.product.id, previous: line.product.stock_quantity });
+    // Reserve stock for every line at once. Each update is conditional on the stock we
+    // just read, so a racing order cannot oversell.
+    const reservations = await Promise.all(
+      lines.map((line) =>
+        admin
+          .from("products")
+          .update({
+            stock_quantity: line.product.stock_quantity - line.quantity,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", line.product.id)
+          .eq("stock_quantity", line.product.stock_quantity)
+          .select("id")
+          .maybeSingle()
+          .then(({ data, error }) => ({ line, ok: !error && Boolean(data) }))
+      )
+    );
+    const reserved = reservations
+      .filter((r) => r.ok)
+      .map((r) => ({ id: r.line.product.id, previous: r.line.product.stock_quantity }));
+    const failed = reservations.find((r) => !r.ok);
+    if (failed) {
+      await restoreStock(admin, reserved);
+      return sendError(res, 409, `${failed.line.product.name} just sold out or changed. Please review your cart.`);
     }
 
     const orderNumber = makeOrderNumber();
@@ -174,9 +186,7 @@ export default async function handler(req, res) {
       .single();
 
     if (orderErr) {
-      for (const r of reserved) {
-        await admin.from("products").update({ stock_quantity: r.previous }).eq("id", r.id);
-      }
+      await restoreStock(admin, reserved);
       throw orderErr;
     }
 
@@ -191,7 +201,12 @@ export default async function handler(req, res) {
         total_price: l.total,
       }))
     );
-    if (itemsErr) throw itemsErr;
+    if (itemsErr) {
+      // Do not leave a half-saved order (no items) or stock held for it.
+      await admin.from("orders").delete().eq("id", order.id);
+      await restoreStock(admin, reserved);
+      throw itemsErr;
+    }
 
     return sendJson(res, 201, {
       order: {

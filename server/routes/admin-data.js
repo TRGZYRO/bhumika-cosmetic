@@ -9,7 +9,7 @@ import { authenticateRequest, sendError, sendJson } from "../auth.js";
  *   GET    ?resource=dashboard | products | categories | orders | staff | settings
  *   POST   ?resource=products | categories | staff
  *   PATCH  ?resource=products | categories | orders&id=<uuid>
- *   DELETE ?resource=products | categories&id=<uuid>
+ *   DELETE ?resource=products | categories&id=<uuid>; orders&id=<uuid> or orders&scope=cancelled (cancelled orders only)
  *   PUT    ?resource=settings                       (owner only)
  *
  * Writes are whitelisted per resource, so request bodies cannot set arbitrary columns.
@@ -196,6 +196,25 @@ export default async function handler(req, res) {
           .single();
         if (error) return sendError(res, 400, error.message);
         return sendJson(res, 200, { data });
+      }
+      // Only cancelled orders can be deleted, so live orders cannot be removed by mistake.
+      if (req.method === "DELETE") {
+        const scope = url.searchParams.get("scope");
+        let query = sb.from("orders").select("id").eq("order_status", "cancelled");
+        if (id) query = query.eq("id", id);
+        else if (scope !== "cancelled") return sendError(res, 400, "Choose an order to delete.");
+        const { data: targets, error: findErr } = await query;
+        if (findErr) return sendError(res, 400, findErr.message);
+        if (!targets || targets.length === 0) {
+          return sendError(res, 400, id ? "Only cancelled orders can be deleted." : "There are no cancelled orders to delete.");
+        }
+        const orderIds = targets.map((o) => o.id);
+        // Remove the line items first, then the orders themselves.
+        const { error: itemsErr } = await sb.from("order_items").delete().in("order_id", orderIds);
+        if (itemsErr) return sendError(res, 400, itemsErr.message);
+        const { error: ordersErr } = await sb.from("orders").delete().in("id", orderIds);
+        if (ordersErr) return sendError(res, 400, ordersErr.message);
+        return sendJson(res, 200, { ok: true, deleted: orderIds.length });
       }
     }
 

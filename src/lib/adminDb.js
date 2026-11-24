@@ -22,6 +22,10 @@ export const adminDb = {
 
   listOrders: async () => (await api.get(r("orders"))).data || [],
   updateOrder: (id, fields) => api.patch(r("orders", `&id=${id}`), fields),
+  /** Deletes one order. The server only allows this for orders that are cancelled. */
+  deleteOrder: (id) => api.del(r("orders", `&id=${id}`)),
+  /** Deletes every cancelled order in one go. */
+  deleteCancelledOrders: () => api.del(r("orders", "&scope=cancelled")),
 
   getStaff: async () => {
     const { profiles, roles } = await api.get(r("staff"));

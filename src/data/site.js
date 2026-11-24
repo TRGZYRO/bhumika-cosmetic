@@ -1,19 +1,19 @@
 /**
  * Site-wide business information for BHUMIKA COSMETIC.
  *
- * Placeholders to replace with real details. The live shop reads the name, phone,
- * address and delivery settings from the database (Admin > Settings), so these
- * values only show when the database is not connected.
+ * Contact details (phone, WhatsApp, email, address) are shown from this file, so
+ * they always match what the business has published. The shop name, tagline and
+ * delivery settings still come from the database (Admin > Settings).
  */
 export const site = {
   name: "Bhumika Cosmetic",
   tagline: "Beauty essentials for every day, delivered to your door.",
 
-  phone: "+91 00000 00000",
-  email: "hello@example.com",
-  address: "Your shop address, City, State",
+  phone: "+91 74170 68105",
+  email: "bhumikacosmeticc@gmail.com",
+  address: "Shop, Street, No. 2, Kaveri Royal Apartment, Swarna Jayanti Nagar, Aligarh, Uttar Pradesh 202001",
 
-  whatsapp: "https://wa.me/910000000000?text=Hello%20Bhumika%20Cosmetic",
+  whatsapp: "https://wa.me/917417068105?text=Hello%20Bhumika%20Cosmetic",
 
   // Main navigation (desktop and mobile)
   nav: [

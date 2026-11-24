@@ -12,9 +12,10 @@ export default function Footer() {
   const { isAuthenticated } = useAuth();
 
   const name = shop?.name || site.name;
-  const phone = shop?.phone || site.phone;
-  const email = shop?.email || site.email;
-  const address = shop?.address || site.address;
+  // Contact details come from site.js so the published number, email and address are the same everywhere.
+  const phone = site.phone;
+  const email = site.email;
+  const address = site.address;
 
   return (
     <footer className="section-dark border-t border-rose/20">

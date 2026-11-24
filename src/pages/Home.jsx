@@ -28,13 +28,13 @@ export default function Home() {
       {/* Hero */}
       <section className="section-dark relative overflow-hidden px-6 pb-24 pt-36 md:pb-32 md:pt-44">
         <div className="mx-auto grid max-w-7xl items-center gap-14 lg:grid-cols-2">
-          <div>
+          <div className="min-w-0">
             <Reveal immediate>
               <p className="mb-6 inline-flex items-center gap-2 rounded-full border border-petal/30 px-4 py-1.5 text-xs font-semibold uppercase tracking-[0.22em] text-petal">
                 <Sparkles size={14} strokeWidth={1.8} /> New arrivals every week
               </p>
             </Reveal>
-            <Reveal as="h1" immediate delay={120} className="text-6xl font-semibold leading-[0.95] text-white md:text-8xl">
+            <Reveal as="h1" immediate delay={120} className="text-5xl font-semibold leading-[0.95] text-white sm:text-6xl md:text-8xl break-words">
               Beauty, chosen
               <span className="block italic text-petal">with you in mind.</span>
             </Reveal>
@@ -53,10 +53,10 @@ export default function Home() {
             </Reveal>
           </div>
 
-          <Reveal immediate delay={200} variant="image" className="relative mx-auto w-full max-w-md">
+          <Reveal immediate delay={200} variant="image" className="relative mx-auto w-full min-w-0 max-w-md">
             <div className="rounded-[2.5rem] border border-petal/25 bg-white/5 p-5 backdrop-blur">
               <div className="overflow-hidden rounded-[2rem]">
-                <Image src={heroProduct?.image} alt={heroProduct?.name || "Featured product"} className="h-[420px]" fallbackLabel={heroProduct?.name || "Featured product"} eager />
+                <Image src={heroProduct?.image} alt={heroProduct?.name || "Featured product"} className="h-[300px] w-full sm:h-[420px]" fallbackLabel={heroProduct?.name || "Featured product"} eager />
               </div>
               {heroProduct && (
                 <div className="flex items-center justify-between px-2 pb-2 pt-5">

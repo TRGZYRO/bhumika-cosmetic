@@ -29,13 +29,13 @@ export default function Loader() {
     } catch {
       /* storage unavailable: the intro simply plays again next time */
     }
-    const timer = setTimeout(() => setPhase("leaving"), 1500);
+    const timer = setTimeout(() => setPhase("leaving"), 1000);
     return () => clearTimeout(timer);
   }, [phase]);
 
   useEffect(() => {
     if (phase !== "leaving") return undefined;
-    const timer = setTimeout(() => setPhase("gone"), 1000);
+    const timer = setTimeout(() => setPhase("gone"), 600);
     return () => clearTimeout(timer);
   }, [phase]);
 

@@ -5,14 +5,15 @@
  * with the project's Web API key. Google checks the token's signature, expiry and
  * project, and returns the user it belongs to.
  *
- * This avoids the Firebase Admin SDK, whose token checks depend on an ES-module-only
- * package that fails to load in Vercel's serverless runtime ("require() of ES Module").
- *
- * Uses the same API key the website already has (VITE_FIREBASE_API_KEY), so no
- * private key is needed on the server.
+ * Verified results are cached in memory for a few minutes. On a warm serverless
+ * instance this skips a network round trip to Google on every API call.
  *
  * NEVER import this from browser code.
  */
+
+const CACHE_TTL_MS = 5 * 60 * 1000;
+const CACHE_MAX_ENTRIES = 500;
+const tokenCache = new Map();
 
 function webApiKey() {
   return process.env.FIREBASE_API_KEY || process.env.VITE_FIREBASE_API_KEY || "";
@@ -29,6 +30,10 @@ export function isAdminConfigured() {
  */
 export async function verifyIdToken(idToken) {
   if (!idToken) return null;
+
+  const cached = tokenCache.get(idToken);
+  if (cached && cached.expiresAt > Date.now()) return cached.user;
+
   const apiKey = webApiKey();
   if (!apiKey) {
     console.warn("Firebase ID token check skipped: FIREBASE_API_KEY / VITE_FIREBASE_API_KEY is not set.");
@@ -42,6 +47,8 @@ export async function verifyIdToken(idToken) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ idToken }),
+        // Do not let a slow Google call hold the whole request open.
+        signal: AbortSignal.timeout(8000),
       }
     );
     const data = await response.json().catch(() => ({}));
@@ -52,12 +59,17 @@ export async function verifyIdToken(idToken) {
       return null;
     }
 
-    return {
+    const verified = {
       uid: user.localId,
       email: user.email || "",
       name: user.displayName || "",
       emailVerified: Boolean(user.emailVerified),
     };
+
+    if (tokenCache.size >= CACHE_MAX_ENTRIES) tokenCache.clear();
+    tokenCache.set(idToken, { user: verified, expiresAt: Date.now() + CACHE_TTL_MS });
+
+    return verified;
   } catch (err) {
     console.warn("Firebase ID token check failed:", err?.message || err);
     return null;

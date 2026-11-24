@@ -24,7 +24,7 @@ export default async function handler(req, res) {
     // Full error goes to Vercel's function logs; the app gets the message as JSON.
     console.error(`API /api/${name} crashed:`, err);
     if (!res.headersSent) {
-      return res.status(500).json({ error: `Server error: ${err?.message || "unknown"}` });
+      return res.status(500).json({ error: "Something went wrong on the server. Please try again." });
     }
   }
 }

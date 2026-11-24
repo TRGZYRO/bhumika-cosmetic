@@ -7,8 +7,10 @@ import { useCatalog } from "../contexts/CatalogContext";
 import { useAuth } from "../contexts/AuthContext";
 import { api } from "../lib/api";
 import { calcTotals, formatPrice } from "../lib/catalog";
+import PlacingOrderOverlay from "../components/PlacingOrderOverlay";
 
 const PHONE_PATTERN = /^[+0-9 ()-]{7,20}$/;
+const EMAIL_PATTERN = /^\S+@\S+\.\S+$/;
 
 /**
  * Checkout: delivery details with saved addresses, map location picker, and order placement.
@@ -58,6 +60,22 @@ export default function Checkout() {
   const searchDebounceRef = useRef(null);
   const [searchResults, setSearchResults] = useState([]);
   const [showSearchResults, setShowSearchResults] = useState(false);
+  const [searchTerm, setSearchTerm] = useState("");
+  // Where the map should open: the saved address's pin, or null for the country view.
+  const initialPosRef = useRef(null);
+
+  // Signed-in shoppers with saved addresses pick one of them. The manual address form
+  // is only used by guests, and by signed-in shoppers who have no saved address yet.
+  const manualMode = !isAuthenticated || (!loadingAddresses && savedAddresses.length === 0);
+
+  // Release the Leaflet map when leaving the page.
+  useEffect(() => {
+    return () => {
+      if (mapInstance.current) mapInstance.current.remove();
+      mapInstance.current = null;
+      markerInstance.current = null;
+    };
+  }, []);
 
   // Pre-fill from the signed-in customer's details
   useEffect(() => {
@@ -123,6 +141,13 @@ export default function Checkout() {
   // Open add/edit address modal
   const openAddressModal = (address = null) => {
     setEditingAddress(address);
+    const start =
+      address?.latitude && address?.longitude
+        ? { lat: Number(address.latitude), lng: Number(address.longitude) }
+        : null;
+    initialPosRef.current = start;
+    setMapMarker(start);
+    if (start) setMapCenter(start);
     if (address) {
       // Pre-fill modal form
       setModalForm({
@@ -165,6 +190,11 @@ export default function Checkout() {
     setEditingAddress(null);
     setSearchResults([]);
     setShowSearchResults(false);
+    setSearchTerm("");
+    if (mapInstance.current) mapInstance.current.remove();
+    mapInstance.current = null;
+    markerInstance.current = null;
+    setMapLoaded(false);
   };
 
   // Modal form state
@@ -184,8 +214,8 @@ export default function Checkout() {
   });
 
   // Load Leaflet map
-  const loadLeafletMap = useCallback(async () => {
-    if (mapLoaded || mapInstance.current) return;
+  const loadLeafletMap = async () => {
+    if (mapInstance.current) return;
 
     // Load Leaflet CSS if not already loaded
     if (!document.querySelector('link[href*="leaflet.css"]')) {
@@ -218,7 +248,7 @@ export default function Checkout() {
 
     initMap();
     setMapLoaded(true);
-  }, [mapLoaded]);
+  };
 
   // Initialize Leaflet map
   const initMap = () => {
@@ -232,9 +262,10 @@ export default function Checkout() {
         shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
       });
 
+      const start = initialPosRef.current || { lat: 20.5937, lng: 78.9629 };
       mapInstance.current = window.L.map(mapRef.current, {
-        center: [mapCenter.lat, mapCenter.lng],
-        zoom: 14,
+        center: [start.lat, start.lng],
+        zoom: initialPosRef.current ? 15 : 5,
         zoomControl: true,
       });
 
@@ -245,7 +276,7 @@ export default function Checkout() {
       }).addTo(mapInstance.current);
 
       // Create draggable marker
-      markerInstance.current = window.L.marker([mapMarker?.lat || mapCenter.lat, mapMarker?.lng || mapCenter.lng], {
+      markerInstance.current = window.L.marker([start.lat, start.lng], {
         draggable: true,
         title: "Delivery location",
       }).addTo(mapInstance.current);
@@ -267,11 +298,6 @@ export default function Checkout() {
         reverseGeocode({ lat: pos.lat, lng: pos.lng });
       });
 
-      // If we have a saved marker position, center the map
-      if (mapMarker) {
-        mapInstance.current.setView([mapMarker.lat, mapMarker.lng], 14);
-        if (markerInstance.current) markerInstance.current.setLatLng([mapMarker.lat, mapMarker.lng]);
-      }
     } catch (err) {
       console.error("Map init error:", err);
     }
@@ -329,7 +355,7 @@ export default function Checkout() {
 
     setSearchResults([]);
     setShowSearchResults(false);
-    if (searchInputRef.current) searchInputRef.current.value = feature.properties.name || "";
+    setSearchTerm(feature.properties.name || "");
   };
 
   // Fill form from Photon result
@@ -435,15 +461,19 @@ export default function Checkout() {
     }
     setSavingAddress(true);
     try {
-      if (editingAddress) {
-        await api.put("/api/addresses", { id: editingAddress.id, ...modalForm });
-      } else {
-        await api.post("/api/addresses", modalForm);
-      }
+      const result = editingAddress
+        ? await api.put("/api/addresses", { id: editingAddress.id, ...modalForm })
+        : await api.post("/api/addresses", modalForm);
       closeAddressModal();
       // Reload addresses
       const data = await api.get("/api/addresses");
       setSavedAddresses(data.addresses || []);
+      // Use the address that was just added (or edited, if it was the one selected).
+      const saved = result?.address;
+      if (saved && (!editingAddress || selectedAddressId === saved.id)) {
+        setSelectedAddressId(saved.id);
+        fillFormFromAddress(saved);
+      }
     } catch (err) {
       alert(err.message || "Failed to save address");
     } finally {
@@ -485,25 +515,56 @@ export default function Checkout() {
     }
   };
 
+  // Customer details taken from a saved address the shopper picked.
+  const customerFromAddress = (addr) => ({
+    name: (addr.full_name || "").trim(),
+    phone: (addr.phone || "").trim(),
+    email: EMAIL_PATTERN.test(form.email.trim()) ? form.email.trim() : "",
+    address: [addr.address_line1, addr.address_line2].filter(Boolean).join(", ").trim(),
+    pincode: (addr.pincode || "").trim(),
+    city: (addr.city || "").trim(),
+    state: (addr.state || "").trim(),
+    landmark: (addr.landmark || "").trim(),
+    notes: form.notes.trim(),
+    latitude: addr.latitude != null ? Number(addr.latitude) : null,
+    longitude: addr.longitude != null ? Number(addr.longitude) : null,
+  });
+
   // Handle order submission
   async function handleSubmit(e) {
     e.preventDefault();
     setError("");
-    if (!validate()) return;
+
+    let customer;
+    if (manualMode) {
+      if (!validate()) return;
+      customer = {
+        name: form.name.trim(),
+        phone: form.phone.trim(),
+        email: form.email.trim(),
+        address: form.address.trim(),
+        pincode: form.pincode.trim(),
+        city: form.city.trim(),
+        state: form.state.trim(),
+        landmark: form.landmark.trim(),
+        notes: form.notes.trim(),
+        latitude: mapMarker?.lat ?? null,
+        longitude: mapMarker?.lng ?? null,
+      };
+    } else {
+      if (loadingAddresses) {
+        setError("Your saved addresses are still loading. Please try again in a moment.");
+        return;
+      }
+      const addr = savedAddresses.find((a) => a.id === selectedAddressId);
+      if (!addr) {
+        setError("Please choose a delivery address.");
+        return;
+      }
+      customer = customerFromAddress(addr);
+    }
+
     setSubmitting(true);
-
-    const customer = {
-      name: form.name.trim(),
-      phone: form.phone.trim(),
-      email: form.email.trim(),
-      address: form.address.trim(),
-      pincode: form.pincode.trim(),
-      city: form.city.trim(),
-      state: form.state.trim(),
-      landmark: form.landmark.trim(),
-      notes: form.notes.trim(),
-    };
-
     try {
       if (source === "demo") {
         const demoNumber = "DEMO-" + demoStamp;
@@ -512,15 +573,24 @@ export default function Checkout() {
         return;
       }
 
-      const data = await api.post("/api/orders", {
-        items: items.map((i) => ({ productId: i.productId, quantity: i.quantity })),
-        customer,
-        paymentMethod: "cod",
-      });
+      const data = await api.post(
+        "/api/orders",
+        {
+          items: items.map((i) => ({ productId: i.productId, quantity: i.quantity })),
+          customer,
+          paymentMethod: "cod",
+        },
+        {
+          timeoutMs: 30000,
+          timeoutMessage:
+            "The order is taking too long to confirm. Please check My orders before trying again, so you don't place it twice.",
+        }
+      );
       setConfirmation({ name: customer.name, orderNumber: data.order.order_number, total: data.order.total_amount });
       clearCart();
 
-      // Auto-save address if it's new
+      // Save a new manual address for next time. Fire and forget: the shopper already
+      // sees the confirmation, so there is no reason to keep them waiting on it.
       if (isAuthenticated && !selectedAddressId) {
         const addressToSave = {
           label: "Home",
@@ -532,15 +602,11 @@ export default function Checkout() {
           state: customer.state,
           pincode: customer.pincode,
           landmark: customer.landmark,
-          latitude: mapMarker?.lat || null,
-          longitude: mapMarker?.lng || null,
+          latitude: customer.latitude || null,
+          longitude: customer.longitude || null,
           is_default: savedAddresses.length === 0,
         };
-        try {
-          await api.post("/api/addresses", addressToSave);
-        } catch (err) {
-          console.warn("Failed to auto-save address:", err);
-        }
+        api.post("/api/addresses", addressToSave).catch((err) => console.warn("Failed to auto-save address:", err));
       }
     } catch (err) {
       setError(err.message || "We couldn't place your order. Please try again.");
@@ -642,11 +708,19 @@ export default function Checkout() {
                       const isSelected = selectedAddressId === addr.id;
                       const Icon = getLabelIcon(addr.label);
                       return (
-                        <button
+                        <div
                           key={addr.id}
-                          type="button"
+                          role="button"
+                          tabIndex={0}
+                          aria-pressed={isSelected}
                           onClick={() => handleAddressSelect(addr)}
-                          className={`relative w-full p-4 rounded-2xl border-2 transition-all text-left ${
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" || e.key === " ") {
+                              e.preventDefault();
+                              handleAddressSelect(addr);
+                            }
+                          }}
+                          className={`relative w-full cursor-pointer p-4 rounded-2xl border-2 transition-all text-left ${
                             isSelected
                               ? "border-rosewood bg-blush shadow-[0_0_0_2px_rgba(156,44,61,0.2)]"
                               : "border-petal hover:border-rose hover:bg-white"
@@ -676,7 +750,7 @@ export default function Checkout() {
                               )}
                               <p className="mt-1 text-sm text-cocoa/60">📞 {addr.phone}</p>
                             </div>
-                            <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <div className="flex items-center gap-1">
                               {!isSelected && (
                                 <button
                                   type="button"
@@ -712,7 +786,7 @@ export default function Checkout() {
                               <CheckCircle2 size={10} strokeWidth={2.5} className="text-white" />
                             </div>
                           )}
-                        </button>
+                        </div>
                       );
                     })}
                   </div>
@@ -733,11 +807,10 @@ export default function Checkout() {
               </div>
             )}
 
-            {/* Manual Address Form (for guests or when no saved address selected) */}
+            {/* Delivery details: guests and signed-in shoppers with no saved address; otherwise the note only */}
+            {manualMode ? (
             <div className="card p-7 md:p-9">
-              <h2 className="mb-6 text-2xl font-semibold text-rosewood">
-                {isAuthenticated && savedAddresses.length > 0 ? "Or enter a new address" : "Delivery details"}
-              </h2>
+              <h2 className="mb-6 text-2xl font-semibold text-rosewood">Delivery details</h2>
               <div className="grid gap-5 md:grid-cols-2">
                 {field("name", "Full name", { autoComplete: "name" })}
                 {field("phone", "Phone number", { type: "tel", autoComplete: "tel", placeholder: "+91 00000 00000" })}
@@ -763,7 +836,7 @@ export default function Checkout() {
                 {errors.address && <p id="address-error" className="mt-1.5 text-sm text-[#b42318]">{errors.address}</p>}
               </div>
               <div className="mt-5">
-                <label htmlFor="address2" className="mb-2 block text-sm font-semibold text-rosewood">Address line 2 (optional)</label>
+                <label htmlFor="address2" className="mb-2 block text-sm font-semibold text-rosewood">Landmark (optional)</label>
                 <input
                   id="address2"
                   value={form.landmark}
@@ -778,6 +851,13 @@ export default function Checkout() {
                 <input id="notes" value={form.notes} onChange={(e) => update("notes", e.target.value)} className="field" placeholder="e.g. call before arriving" />
               </div>
             </div>
+            ) : (
+              <div className="card p-7 md:p-9">
+                <h2 className="mb-6 text-2xl font-semibold text-rosewood">Delivery note</h2>
+                <label htmlFor="notes" className="mb-2 block text-sm font-semibold text-rosewood">Note for the delivery (optional)</label>
+                <input id="notes" value={form.notes} onChange={(e) => update("notes", e.target.value)} className="field" placeholder="e.g. call before arriving" />
+              </div>
+            )}
 
             <div className="card p-7 md:p-9">
               <h2 className="mb-6 text-2xl font-semibold text-rosewood">Payment</h2>
@@ -822,7 +902,7 @@ export default function Checkout() {
               </p>
             )}
 
-            <button type="submit" disabled={submitting} className="btn btn-primary mt-7 w-full py-4">
+            <button type="submit" disabled={submitting || (isAuthenticated && loadingAddresses)} className="btn btn-primary mt-7 w-full py-4">
               {submitting ? "Placing order…" : <>Place order <ArrowRight size={18} /></>}
             </button>
             <Link to="/cart" className="mt-4 block text-center text-sm font-semibold text-rosewood hover:text-rose">
@@ -831,6 +911,8 @@ export default function Checkout() {
           </aside>
         </form>
       </div>
+
+      {submitting && <PlacingOrderOverlay />}
 
       {/* Add/Edit Address Modal */}
       {showAddressModal && (
@@ -935,8 +1017,11 @@ export default function Checkout() {
                     ref={searchInputRef}
                     id="mapSearch"
                     type="text"
-                    value={searchInputRef.current?.value || ""}
-                    onChange={handleSearchChange}
+                    value={searchTerm}
+                    onChange={(e) => {
+                      setSearchTerm(e.target.value);
+                      handleSearchChange(e);
+                    }}
                     onFocus={() => searchResults.length > 0 && setShowSearchResults(true)}
                     placeholder="Search for a place (e.g., Connaught Place, Delhi)..."
                     className="field pl-10"

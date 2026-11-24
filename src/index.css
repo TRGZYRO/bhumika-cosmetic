@@ -430,3 +430,34 @@
   animation: rise 0.6s var(--ease-luxe) both;
   animation-delay: calc(var(--i, 0) * 60ms + 120ms);
 }
+
+/* Order placing overlay (checkout) */
+.order-placing-card { animation: order-rise 0.45s var(--ease-luxe) both; }
+.order-ring { animation: order-spin 0.9s linear infinite; }
+.order-pulse { animation: order-pulse 1.4s ease-in-out infinite; }
+.order-step { animation: order-fade 0.35s ease both; }
+.order-bar {
+  width: 40%;
+  background: linear-gradient(90deg, var(--color-rose), var(--color-rosewood));
+  animation: order-slide 1.2s ease-in-out infinite;
+}
+
+@keyframes order-rise {
+  from { opacity: 0; transform: translateY(16px) scale(0.97); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes order-spin {
+  to { transform: rotate(360deg); }
+}
+@keyframes order-pulse {
+  0%, 100% { transform: scale(0.75); opacity: 0.6; }
+  50% { transform: scale(1); opacity: 1; }
+}
+@keyframes order-fade {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes order-slide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(250%); }
+}
