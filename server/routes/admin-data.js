@@ -6,10 +6,10 @@ import { authenticateRequest, sendError, sendJson } from "../auth.js";
  * Login is Firebase, so Supabase RLS cannot see the signed-in user. Every admin
  * read and write goes through this route, which checks the caller first.
  *
- *   GET    ?resource=dashboard | products | categories | orders | staff | settings
- *   POST   ?resource=products | categories | staff
- *   PATCH  ?resource=products | categories | orders&id=<uuid>
- *   DELETE ?resource=products | categories&id=<uuid>; orders&id=<uuid> or orders&scope=cancelled (cancelled orders only)
+ *   GET    ?resource=dashboard | products | categories | orders | staff | settings | coupons
+ *   POST   ?resource=products | categories | staff | coupons
+ *   PATCH  ?resource=products | categories | orders | coupons&id=<uuid>
+ *   DELETE ?resource=products | categories | coupons&id=<uuid>; orders&id=<uuid> or orders&scope=cancelled (cancelled orders only)
  *   PUT    ?resource=settings                       (owner only)
  *
  * Writes are whitelisted per resource, so request bodies cannot set arbitrary columns.
@@ -25,16 +25,101 @@ const PRODUCT_FIELDS = [
   "size_label",
   "base_price",
   "compare_at_price",
+  "combo_quantity",
+  "combo_price",
   "stock_quantity",
   "category_id",
   "image_url",
   "is_available",
   "is_featured",
 ];
+const COUPON_FIELDS = [
+  "code",
+  "description",
+  "discount_type",
+  "discount_value",
+  "min_order_amount",
+  "max_discount_amount",
+  "usage_limit",
+  "per_customer_limit",
+  "valid_until",
+  "is_active",
+];
 const CATEGORY_FIELDS = ["name", "slug", "description", "sort_order", "is_active"];
 const ORDER_FIELDS = ["order_status", "payment_status"];
 const ORDER_STATUSES = ["pending", "confirmed", "out_for_delivery", "completed", "cancelled"];
 const ROLES = ["owner", "manager", "staff", "customer"];
+
+/** Coupon codes: letters, digits, dash and underscore, stored in capitals. */
+function normalizeCouponFields(fields) {
+  const out = { ...fields };
+  if (out.code !== undefined) {
+    out.code = String(out.code || "").trim().toUpperCase();
+    if (!/^[A-Z0-9_-]{3,30}$/.test(out.code)) {
+      return { error: "Coupon codes need 3 to 30 letters or numbers (no spaces)." };
+    }
+  }
+  if (out.discount_type !== undefined && !["percent", "fixed"].includes(out.discount_type)) {
+    return { error: "Choose a discount type: percent or fixed amount." };
+  }
+  if (out.discount_value !== undefined) {
+    const value = Number(out.discount_value);
+    if (!Number.isFinite(value) || value <= 0) return { error: "The discount must be more than 0." };
+    if (out.discount_type === "percent" && value > 100) return { error: "A percent discount cannot be more than 100." };
+    out.discount_value = value;
+  }
+  for (const key of ["min_order_amount", "max_discount_amount"]) {
+    if (out[key] !== undefined) {
+      out[key] = out[key] === null || out[key] === "" ? null : Number(out[key]);
+      if (out[key] !== null && (!Number.isFinite(out[key]) || out[key] < 0)) return { error: "Amounts cannot be negative." };
+    }
+  }
+  if (out.min_order_amount === null) out.min_order_amount = 0;
+  if (out.usage_limit !== undefined) {
+    out.usage_limit = out.usage_limit === null || out.usage_limit === "" ? null : Math.floor(Number(out.usage_limit));
+    if (out.usage_limit !== null && (!Number.isFinite(out.usage_limit) || out.usage_limit < 1)) {
+      return { error: "The usage limit must be at least 1, or left blank for no limit." };
+    }
+  }
+  if (out.per_customer_limit !== undefined) {
+    out.per_customer_limit = out.per_customer_limit === null || out.per_customer_limit === "" ? null : Math.floor(Number(out.per_customer_limit));
+    if (out.per_customer_limit !== null && (!Number.isFinite(out.per_customer_limit) || out.per_customer_limit < 1)) {
+      return { error: "Uses per customer must be at least 1, or left blank for no limit." };
+    }
+  }
+  if (out.valid_until !== undefined) out.valid_until = out.valid_until || null;
+  if (out.description !== undefined) out.description = String(out.description || "").trim() || null;
+  return { fields: out };
+}
+
+/**
+ * Combo fields on a product: both set (at least 2 pieces, cheaper than buying them one by one),
+ * or both empty for no offer. Only runs when the request includes combo fields, so updates
+ * such as the visibility toggle do not clear an existing offer.
+ * Returns an error message, or null when the fields are fine (and are normalised in place).
+ */
+function comboFieldsError(fields) {
+  if (!("combo_quantity" in fields) && !("combo_price" in fields)) return null;
+  const empty = (v) => v === null || v === undefined || v === "";
+  if (empty(fields.combo_quantity) && empty(fields.combo_price)) {
+    fields.combo_quantity = null;
+    fields.combo_price = null;
+    return null;
+  }
+  if (empty(fields.combo_quantity) || empty(fields.combo_price)) {
+    return "Enter both the number of pieces and the combo price, or leave both empty.";
+  }
+  const quantity = Math.floor(Number(fields.combo_quantity));
+  const price = Number(fields.combo_price);
+  if (!Number.isFinite(quantity) || quantity < 2) return "A combo needs at least 2 pieces.";
+  if (!Number.isFinite(price) || price < 0) return "Enter a valid combo price.";
+  if (fields.base_price !== undefined && !(price < Number(fields.base_price) * quantity)) {
+    return `The combo price must be lower than buying ${quantity} pieces at the single price.`;
+  }
+  fields.combo_quantity = quantity;
+  fields.combo_price = price;
+  return null;
+}
 
 const pick = (body, fields) => Object.fromEntries(Object.entries(body || {}).filter(([k]) => fields.includes(k)));
 
@@ -119,6 +204,8 @@ export default async function handler(req, res) {
       if (req.method === "POST") {
         const fields = pick(body, PRODUCT_FIELDS);
         if (!fields.name) return sendError(res, 400, "Product name is required.");
+        const comboError = comboFieldsError(fields);
+        if (comboError) return sendError(res, 400, comboError);
         fields.slug = await uniqueSlug(sb, "products", fields.slug || fields.name);
         const { data, error } = await sb.from("products").insert(fields).select().single();
         if (error) return sendError(res, 400, error.message);
@@ -126,6 +213,8 @@ export default async function handler(req, res) {
       }
       if (req.method === "PATCH" && id) {
         const fields = pick(body, PRODUCT_FIELDS);
+        const comboError = comboFieldsError(fields);
+        if (comboError) return sendError(res, 400, comboError);
         if (fields.slug !== undefined) fields.slug = await uniqueSlug(sb, "products", fields.slug, id);
         const { data, error } = await sb
           .from("products")
@@ -167,6 +256,50 @@ export default async function handler(req, res) {
       }
       if (req.method === "DELETE" && id) {
         const { error } = await sb.from("categories").delete().eq("id", id);
+        if (error) return sendError(res, 400, error.message);
+        return sendJson(res, 200, { ok: true });
+      }
+    }
+
+    // ---------- coupons ----------
+    if (resource === "coupons") {
+      if (req.method === "GET") {
+        const { data, error } = await sb.from("coupons").select("*").order("created_at", { ascending: false });
+        if (error) throw error;
+        return sendJson(res, 200, { data });
+      }
+      if (req.method === "POST") {
+        const normalized = normalizeCouponFields(pick(body, COUPON_FIELDS));
+        if (normalized.error) return sendError(res, 400, normalized.error);
+        const fields = normalized.fields;
+        if (!fields.code) return sendError(res, 400, "Coupon code is required.");
+        if (!fields.discount_type || fields.discount_value === undefined) {
+          return sendError(res, 400, "Choose a discount type and amount.");
+        }
+        const { data, error } = await sb.from("coupons").insert(fields).select().single();
+        if (error) {
+          const duplicate = error.code === "23505";
+          return sendError(res, duplicate ? 409 : 400, duplicate ? "A coupon with this code already exists." : error.message);
+        }
+        return sendJson(res, 201, { data });
+      }
+      if (req.method === "PATCH" && id) {
+        const normalized = normalizeCouponFields(pick(body, COUPON_FIELDS));
+        if (normalized.error) return sendError(res, 400, normalized.error);
+        const { data, error } = await sb
+          .from("coupons")
+          .update({ ...normalized.fields, updated_at: new Date().toISOString() })
+          .eq("id", id)
+          .select()
+          .single();
+        if (error) {
+          const duplicate = error.code === "23505";
+          return sendError(res, duplicate ? 409 : 400, duplicate ? "A coupon with this code already exists." : error.message);
+        }
+        return sendJson(res, 200, { data });
+      }
+      if (req.method === "DELETE" && id) {
+        const { error } = await sb.from("coupons").delete().eq("id", id);
         if (error) return sendError(res, 400, error.message);
         return sendJson(res, 200, { ok: true });
       }

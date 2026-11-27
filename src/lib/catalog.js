@@ -4,6 +4,7 @@
  */
 import { api } from "./api";
 import { demoCategories, demoProducts, demoToApi } from "../data/shop.js";
+import { normalizeCombo, orderTotals } from "../../shared/pricing.js";
 
 export const DEMO_SHOP = {
   name: "Bhumika Cosmetic",
@@ -46,6 +47,8 @@ export function normalizeProduct(row) {
     image: row.image_url || null,
     categorySlug: cat?.slug || "",
     categoryName: cat?.name || "Other",
+    /** Combo offer, e.g. { quantity: 2, price: 199 }, or null. */
+    combo: normalizeCombo(row.combo_quantity, row.combo_price, price),
   };
 }
 
@@ -125,14 +128,10 @@ export const SORT_OPTIONS = [
 ];
 
 /**
- * Order totals. The server runs the same rules when the order is placed (it is the source of truth),
- * so this is only for showing the customer what to expect.
+ * Order totals for the cart and checkout. `subtotal` is the sum of the lines after combo offers,
+ * `discount` is the coupon amount. The server runs the same rules when the order is placed,
+ * and its figures are the ones charged.
  */
-export function calcTotals(subtotal, shop) {
-  const freeAbove = Number(shop?.freeDeliveryAbove || 0);
-  const deliveryCharge =
-    subtotal === 0 || (freeAbove > 0 && subtotal >= freeAbove) ? 0 : Number(shop?.deliveryCharge ?? 0);
-  const taxAmount = Math.round(subtotal * Number(shop?.taxRate || 0) * 100) / 100;
-  const total = Math.round((subtotal + deliveryCharge + taxAmount) * 100) / 100;
-  return { subtotal, deliveryCharge, taxAmount, total };
+export function calcTotals(subtotal, shop, discount = 0) {
+  return orderTotals({ subtotal, discount, shop });
 }

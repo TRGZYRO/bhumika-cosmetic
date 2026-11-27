@@ -2,18 +2,21 @@ import { Link, useNavigate } from "react-router-dom";
 import { ArrowRight, Minus, Plus, ShoppingBag, Trash2 } from "lucide-react";
 import Image from "../components/Image";
 import Reveal from "../components/Reveal";
+import CouponBox from "../components/CouponBox";
 import { useCart } from "../contexts/CartContext";
 import { useCatalog } from "../contexts/CatalogContext";
 import { calcTotals, formatPrice } from "../lib/catalog";
 
+const comboWord = (n) => (n === 2 ? "both" : `all ${n}`);
+
 export default function CartPage() {
-  const { items, subtotal, itemCount, setQuantity, removeItem, clearCart } = useCart();
+  const { lines, subtotal, comboSavings, discount, couponCode, itemCount, setQuantity, removeItem, clearCart } = useCart();
   const { shop } = useCatalog();
   const navigate = useNavigate();
   const currency = shop?.currency || "INR";
-  const totals = calcTotals(subtotal, shop);
+  const totals = calcTotals(subtotal, shop, discount);
   const freeAbove = Number(shop?.freeDeliveryAbove || 0);
-  const toFreeDelivery = freeAbove > 0 && subtotal < freeAbove ? freeAbove - subtotal : 0;
+  const toFreeDelivery = freeAbove > 0 && totals.payable < freeAbove ? freeAbove - totals.payable : 0;
 
   if (itemCount === 0) {
     return (
@@ -47,52 +50,97 @@ export default function CartPage() {
 
         <div className="grid gap-10 lg:grid-cols-[1fr_360px]">
           <ul className="space-y-5">
-            {items.map((item, index) => (
-              <Reveal as="li" key={item.productId} delay={index * 60} className="card flex gap-5 p-5 md:p-6">
-                <Link to={`/product/${item.productId}`} className="w-24 flex-none overflow-hidden rounded-2xl md:w-32">
-                  <Image src={item.image} alt={item.name} className="h-24 md:h-32" fallbackLabel={item.name} />
-                </Link>
-                <div className="flex flex-1 flex-col">
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div>
-                      {item.brand && <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-rose">{item.brand}</p>}
-                      <Link to={`/product/${item.productId}`} className="mt-1 block text-xl font-semibold leading-snug text-rosewood hover:text-rose">
-                        {item.name}
-                      </Link>
-                      {item.sizeLabel && <p className="mt-1 text-sm text-cocoa/60">{item.sizeLabel}</p>}
+            {lines.map((item, index) => {
+              const max = Math.max(1, Math.min(20, item.stock || 20));
+              const step = item.step;
+              const canAddMore = step && item.quantity + step.addCount <= max;
+              return (
+                <Reveal as="li" key={item.productId} delay={index * 60} className="card flex gap-5 p-5 md:p-6">
+                  <Link to={`/product/${item.productId}`} className="w-24 flex-none overflow-hidden rounded-2xl md:w-32">
+                    <Image src={item.image} alt={item.name} className="h-24 md:h-32" fallbackLabel={item.name} />
+                  </Link>
+                  <div className="flex flex-1 flex-col">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        {item.brand && <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-rose">{item.brand}</p>}
+                        <Link to={`/product/${item.productId}`} className="mt-1 block text-xl font-semibold leading-snug text-rosewood hover:text-rose">
+                          {item.name}
+                        </Link>
+                        {item.sizeLabel && <p className="mt-1 text-sm text-cocoa/60">{item.sizeLabel}</p>}
+                      </div>
+                      <div className="text-right">
+                        <span className="text-lg font-semibold text-cocoa">{formatPrice(item.pricing.total, currency)}</span>
+                        {item.pricing.listTotal > item.pricing.total && (
+                          <p className="text-sm text-cocoa/45 line-through">{formatPrice(item.pricing.listTotal, currency)}</p>
+                        )}
+                      </div>
                     </div>
-                    <span className="text-lg font-semibold text-cocoa">{formatPrice(item.price * item.quantity, currency)}</span>
-                  </div>
 
-                  <div className="mt-auto flex flex-wrap items-center justify-between gap-4 pt-4">
-                    <div className="flex items-center overflow-hidden rounded-full border border-petal">
-                      <button type="button" onClick={() => setQuantity(item.productId, item.quantity - 1)} aria-label={`Decrease ${item.name}`} className="p-2.5 text-cocoa hover:bg-blush">
-                        <Minus size={15} strokeWidth={1.6} />
-                      </button>
-                      <span className="w-10 text-center text-sm font-semibold" aria-live="polite">{item.quantity}</span>
-                      <button
-                        type="button"
-                        onClick={() => setQuantity(item.productId, item.quantity + 1)}
-                        disabled={item.quantity >= Math.max(1, item.stock || 20)}
-                        aria-label={`Increase ${item.name}`}
-                        className="p-2.5 text-cocoa hover:bg-blush disabled:opacity-35"
-                      >
-                        <Plus size={15} strokeWidth={1.6} />
+                    {item.pricing.bundles > 0 && (
+                      <p className="mt-2 text-sm font-semibold text-[#166534]">
+                        Combo applied: {item.combo.quantity} for {formatPrice(item.combo.price, currency)}
+                        {item.pricing.bundles > 1 && ` (×${item.pricing.bundles})`}
+                      </p>
+                    )}
+
+                    {step && (
+                      <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-blush p-4">
+                        <p className="text-sm text-rosewood">
+                          <span className="font-semibold">
+                            Add {step.addCount} more and get {comboWord(step.comboQuantity)} for only {formatPrice(step.comboPrice, currency)}.
+                          </span>{" "}
+                          <span className="text-cocoa/70">You save {formatPrice(step.savingsWhenComplete, currency)}.</span>
+                        </p>
+                        {canAddMore ? (
+                          <button
+                            type="button"
+                            onClick={() => setQuantity(item.productId, item.quantity + step.addCount)}
+                            className="btn btn-primary flex-none px-5 py-2.5 text-sm"
+                          >
+                            Add {step.addCount} more
+                          </button>
+                        ) : (
+                          <p className="text-sm font-semibold text-[#a16207]">Only {item.stock} left</p>
+                        )}
+                      </div>
+                    )}
+
+                    <div className="mt-auto flex flex-wrap items-center justify-between gap-4 pt-4">
+                      <div className="flex items-center overflow-hidden rounded-full border border-petal">
+                        <button type="button" onClick={() => setQuantity(item.productId, item.quantity - 1)} aria-label={`Decrease ${item.name}`} className="p-2.5 text-cocoa hover:bg-blush">
+                          <Minus size={15} strokeWidth={1.6} />
+                        </button>
+                        <span className="w-10 text-center text-sm font-semibold" aria-live="polite">{item.quantity}</span>
+                        <button
+                          type="button"
+                          onClick={() => setQuantity(item.productId, item.quantity + 1)}
+                          disabled={item.quantity >= max}
+                          aria-label={`Increase ${item.name}`}
+                          className="p-2.5 text-cocoa hover:bg-blush disabled:opacity-35"
+                        >
+                          <Plus size={15} strokeWidth={1.6} />
+                        </button>
+                      </div>
+                      <button type="button" onClick={() => removeItem(item.productId)} className="inline-flex items-center gap-1.5 text-sm font-medium text-cocoa/60 hover:text-[#b42318]">
+                        <Trash2 size={15} strokeWidth={1.6} /> Remove
                       </button>
                     </div>
-                    <button type="button" onClick={() => removeItem(item.productId)} className="inline-flex items-center gap-1.5 text-sm font-medium text-cocoa/60 hover:text-[#b42318]">
-                      <Trash2 size={15} strokeWidth={1.6} /> Remove
-                    </button>
                   </div>
-                </div>
-              </Reveal>
-            ))}
+                </Reveal>
+              );
+            })}
           </ul>
 
           <aside className="card h-fit p-7 lg:sticky lg:top-32">
             <h2 className="mb-6 text-3xl font-semibold text-rosewood">Order summary</h2>
             <dl className="space-y-3 text-sm">
               <div className="flex justify-between"><dt className="text-cocoa/70">Subtotal</dt><dd className="font-medium">{formatPrice(totals.subtotal, currency)}</dd></div>
+              {comboSavings > 0 && (
+                <div className="flex justify-between text-[#166534]"><dt>Combo savings</dt><dd className="font-medium">−{formatPrice(comboSavings, currency)}</dd></div>
+              )}
+              {totals.discount > 0 && (
+                <div className="flex justify-between text-[#166534]"><dt>Coupon {couponCode}</dt><dd className="font-medium">−{formatPrice(totals.discount, currency)}</dd></div>
+              )}
               <div className="flex justify-between">
                 <dt className="text-cocoa/70">Delivery</dt>
                 <dd className="font-medium">{totals.deliveryCharge === 0 ? "Free" : formatPrice(totals.deliveryCharge, currency)}</dd>
@@ -106,6 +154,12 @@ export default function CartPage() {
                 Add {formatPrice(toFreeDelivery, currency)} more for free delivery.
               </p>
             )}
+
+            <div className="mt-6 border-t border-petal pt-6">
+              <p className="mb-3 text-sm font-semibold text-cocoa">Have a coupon?</p>
+              <CouponBox />
+            </div>
+
             <div className="mt-6 flex items-baseline justify-between border-t border-petal pt-6">
               <span className="text-lg font-semibold">Total</span>
               <span className="text-3xl font-semibold text-rosewood">{formatPrice(totals.total, currency)}</span>

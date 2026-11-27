@@ -8,6 +8,7 @@ import { useCart } from "../contexts/CartContext";
 import { useCatalog } from "../contexts/CatalogContext";
 import { api } from "../lib/api";
 import { formatPrice, normalizeProduct } from "../lib/catalog";
+import { linePricing, nextComboStep } from "../../shared/pricing.js";
 
 /** Product page: photo, price, quantity, add to cart or buy now, and product details. */
 export default function ProductPage() {
@@ -75,6 +76,9 @@ export default function ProductPage() {
   const maxQty = Math.max(1, Math.min(20, product.stock || 20));
   const related = products.filter((p) => p.id !== product.id && p.categorySlug === product.categorySlug).slice(0, 4);
   const discount = product.compareAt ? Math.round(((product.compareAt - product.price) / product.compareAt) * 100) : 0;
+  const pricing = linePricing({ quantity, unitPrice: product.price, mrp: product.compareAt, combo: product.combo });
+  const comboStep = nextComboStep({ quantity, unitPrice: product.price, combo: product.combo });
+  const comboWord = (n) => (n === 2 ? "both" : `all ${n}`);
 
   function handleAdd(thenCheckout = false) {
     if (outOfStock) return;
@@ -142,6 +146,35 @@ export default function ProductPage() {
                         <Plus size={16} strokeWidth={1.6} />
                       </button>
                     </div>
+                  </div>
+                )}
+
+                {product.combo && !outOfStock && (
+                  <div className="mt-7 rounded-2xl bg-blush p-5">
+                    <p className="font-semibold text-rosewood">
+                      Combo offer: {product.combo.quantity} for {formatPrice(product.combo.price, currency)}
+                    </p>
+                    {comboStep ? (
+                      <>
+                        <p className="mt-1.5 text-sm text-cocoa/75">
+                          Add {comboStep.addCount} more to get {comboWord(product.combo.quantity)} for only{" "}
+                          {formatPrice(product.combo.price, currency)}. You save {formatPrice(comboStep.savingsWhenComplete, currency)}.
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => setQuantity((q) => Math.min(maxQty, q + comboStep.addCount))}
+                          disabled={quantity + comboStep.addCount > maxQty}
+                          className="btn btn-primary mt-4 px-5 py-2.5 text-sm"
+                        >
+                          Add {comboStep.addCount} more
+                        </button>
+                      </>
+                    ) : (
+                      <p className="mt-1.5 text-sm text-cocoa/75">
+                        {quantity} for {formatPrice(pricing.total, currency)}
+                        {pricing.savings > 0 && <> · you save {formatPrice(pricing.savings, currency)}</>}
+                      </p>
+                    )}
                   </div>
                 )}
 

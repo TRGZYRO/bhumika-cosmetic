@@ -13,6 +13,7 @@ import AdminLayout from "./pages/admin/AdminLayout";
 import AdminDashboard from "./pages/admin/Dashboard";
 import AdminProducts from "./pages/admin/Products";
 import AdminCategories from "./pages/admin/Categories";
+import AdminCoupons from "./pages/admin/Coupons";
 import AdminOrders from "./pages/admin/Orders";
 import AdminStaff from "./pages/admin/Staff";
 import AdminSettings from "./pages/admin/Settings";
@@ -71,6 +72,7 @@ export default function App() {
                 <Route path="/admin" element={<AdminDashboard />} />
                 <Route path="/admin/products" element={<AdminProducts />} />
                 <Route path="/admin/categories" element={<AdminCategories />} />
+                <Route path="/admin/coupons" element={<AdminCoupons />} />
                 <Route path="/admin/orders" element={<AdminOrders />} />
                 <Route path="/admin/staff" element={<AdminStaff />} />
                 <Route path="/admin/settings" element={<AdminSettings />} />

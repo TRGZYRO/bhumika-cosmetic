@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link, useNavigate, useLocation, Outlet } from "react-router-dom";
-import { LayoutDashboard, Package, Tags, ShoppingBag, Users, Settings, LogOut, Menu, X, ExternalLink } from "lucide-react";
+import { LayoutDashboard, Package, Tags, Ticket, ShoppingBag, Users, Settings, LogOut, Menu, X, ExternalLink } from "lucide-react";
 import { useAuth } from "../../contexts/AuthContext";
 
 const ADMIN_NAV = [
@@ -8,6 +8,7 @@ const ADMIN_NAV = [
   { key: "orders", label: "Orders", href: "/admin/orders", icon: ShoppingBag },
   { key: "products", label: "Products", href: "/admin/products", icon: Package },
   { key: "categories", label: "Categories", href: "/admin/categories", icon: Tags },
+  { key: "coupons", label: "Coupons", href: "/admin/coupons", icon: Ticket },
   { key: "staff", label: "Staff", href: "/admin/staff", icon: Users },
   { key: "settings", label: "Shop settings", href: "/admin/settings", icon: Settings },
 ];

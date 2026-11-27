@@ -1,26 +1,51 @@
 /**
  * POST /api/orders
- * Places an order. Prices and stock are checked on the server, never trusted from the browser.
+ * Places an order. Prices, combo offers, coupons and stock are checked on the server,
+ * never trusted from the browser.
  *
  * Body:
  *   {
  *     items: [{ productId, quantity }],
  *     customer: { name, phone, email, address, pincode, city, state, landmark, latitude, longitude, notes },
- *     paymentMethod: "cod"
+ *     paymentMethod: "cod",
+ *     couponCode?: "SAVE10"
  *   }
  *
- * Returns { order: { id, order_number, total_amount, ... } }.
+ * Returns { order: { id, order_number, subtotal, discount, coupon_code, total_amount, ... } }.
  * Signed-in customers are linked to the order when a valid Firebase token is sent.
  * Guests can check out too. Only the admin client can write orders (RLS), so this route uses it.
  */
 import { authenticateRequest, createAdminClient, sendError, sendJson } from "../auth.js";
+import { parseRequestedItems, priceLines } from "../cart.js";
+import { checkCoupon, normalizeCouponCode, orderTotals } from "../../shared/pricing.js";
 
-const MAX_ITEMS = 50;
-const MAX_QTY = 20;
 const PHONE_PATTERN = /^[+0-9 ()-]{7,20}$/;
 
 function clean(value, max) {
   return String(value ?? "").trim().slice(0, max);
+}
+
+/** Last 10 digits of a phone number, so +91 98765 43210 and 9876543210 match. */
+function phoneKey(value) {
+  const digits = String(value ?? "").replace(/\D/g, "");
+  return digits.slice(-10);
+}
+
+/**
+ * How many times this customer has already used the coupon. Counts their non-cancelled orders,
+ * matched by signed-in account or, for guests, by phone number.
+ */
+async function customerCouponUses(admin, code, profileId, phone) {
+  const { data, error } = await admin
+    .from("orders")
+    .select("user_id, customer_phone")
+    .eq("coupon_code", code)
+    .neq("order_status", "cancelled");
+  if (error) throw error;
+  const me = phoneKey(phone);
+  return (data || []).filter(
+    (o) => (profileId && o.user_id === profileId) || (me && phoneKey(o.customer_phone) === me)
+  ).length;
 }
 
 function makeOrderNumber() {
@@ -34,6 +59,30 @@ async function restoreStock(admin, reserved) {
   await Promise.all(
     reserved.map((r) => admin.from("products").update({ stock_quantity: r.previous }).eq("id", r.id))
   );
+}
+
+/**
+ * Counts one use of a coupon. The update only succeeds if the count is still the value we
+ * read, so two orders racing for the last use cannot both get it.
+ */
+async function claimCoupon(admin, coupon) {
+  const { data, error } = await admin
+    .from("coupons")
+    .update({ times_used: coupon.times_used + 1, updated_at: new Date().toISOString() })
+    .eq("id", coupon.id)
+    .eq("times_used", coupon.times_used)
+    .select("id")
+    .maybeSingle();
+  return !error && Boolean(data);
+}
+
+/** Gives back a coupon use that was claimed for an order that could not be completed. */
+async function releaseCoupon(admin, coupon) {
+  await admin
+    .from("coupons")
+    .update({ times_used: coupon.times_used, updated_at: new Date().toISOString() })
+    .eq("id", coupon.id)
+    .eq("times_used", coupon.times_used + 1);
 }
 
 export default async function handler(req, res) {
@@ -69,65 +118,72 @@ export default async function handler(req, res) {
   if (latitude !== null && (latitude < -90 || latitude > 90)) return sendError(res, 400, "Invalid latitude.");
   if (longitude !== null && (longitude < -180 || longitude > 180)) return sendError(res, 400, "Invalid longitude.");
 
-  const rawItems = Array.isArray(body.items) ? body.items.slice(0, MAX_ITEMS) : [];
-  const requested = new Map();
-  for (const item of rawItems) {
-    const productId = clean(item?.productId, 60);
-    const quantity = Math.floor(Number(item?.quantity));
-    if (!productId || !Number.isFinite(quantity) || quantity < 1 || quantity > MAX_QTY) {
-      return sendError(res, 400, "Some items in your cart are invalid. Please review your cart.");
-    }
-    requested.set(productId, (requested.get(productId) || 0) + quantity);
-  }
-  if (requested.size === 0) return sendError(res, 400, "Your cart is empty.");
+  const parsed = parseRequestedItems(body.items);
+  if (!parsed.ok) return sendError(res, 400, parsed.error);
+  const { requested } = parsed;
+  const couponCode = normalizeCouponCode(body.couponCode);
 
   try {
-    // The three lookups do not depend on each other, so they run at the same time:
-    // who is ordering (if signed in), the live products, and the shop settings.
-    const ids = [...requested.keys()];
-    const [auth, productsRes, settingsRes] = await Promise.all([
+    // These lookups do not depend on each other, so they run at the same time:
+    // who is ordering (if signed in), live prices and combos, shop settings, and the coupon.
+    const [auth, priced, settingsRes, couponRes] = await Promise.all([
       req.headers.authorization ? authenticateRequest(req).catch(() => null) : null,
-      admin
-        .from("products")
-        .select("id, name, size_label, base_price, stock_quantity, is_available")
-        .in("id", ids),
+      priceLines(admin, requested),
       admin.from("business_settings").select("*").limit(1).maybeSingle(),
+      couponCode
+        ? admin.from("coupons").select("*").eq("code", couponCode).maybeSingle()
+        : Promise.resolve({ data: null, error: null }),
     ]);
     const profileId = auth?.ok ? auth.profile.id : null;
-    if (productsRes.error) throw productsRes.error;
-    const products = productsRes.data;
-    const settings = settingsRes.data;
+    if (!priced.ok) return sendError(res, priced.status, priced.error);
+    if (settingsRes.error) throw settingsRes.error;
+    if (couponRes.error) throw couponRes.error;
 
-    const byId = new Map((products || []).map((p) => [p.id, p]));
-    const lines = [];
-    for (const [productId, quantity] of requested) {
-      const product = byId.get(productId);
-      if (!product || !product.is_available) {
-        return sendError(res, 409, "An item in your cart is no longer available. Please review your cart.");
-      }
-      if (product.stock_quantity < quantity) {
+    const { lines, subtotal } = priced;
+    for (const line of lines) {
+      if (line.product.stock_quantity < line.quantity) {
         return sendError(
           res,
           409,
-          `Only ${product.stock_quantity} left of ${product.name}. Please lower the quantity.`
+          `Only ${line.product.stock_quantity} left of ${line.product.name}. Please lower the quantity.`
         );
       }
-      const unit = Number(product.base_price);
-      lines.push({
-        product,
-        quantity,
-        unit,
-        total: unit * quantity,
-      });
     }
 
-    // Shop settings decide delivery and tax.
-    const subtotal = lines.reduce((sum, l) => sum + l.total, 0);
-    const freeAbove = Number(settings?.free_delivery_above || 0);
-    const deliveryCharge =
-      subtotal === 0 || (freeAbove > 0 && subtotal >= freeAbove) ? 0 : Number(settings?.delivery_charge ?? 0);
-    const taxAmount = Math.round(subtotal * Number(settings?.tax_rate || 0) * 100) / 100;
-    const total = Math.round((subtotal + deliveryCharge + taxAmount) * 100) / 100;
+    // Coupon: checked against the subtotal after combos.
+    let coupon = null;
+    let couponDiscount = 0;
+    if (couponCode) {
+      if (!couponRes.data) return sendError(res, 400, "This coupon code is not valid.");
+      const check = checkCoupon(couponRes.data, subtotal);
+      if (!check.ok) return sendError(res, 400, check.message);
+      const perCustomer = couponRes.data.per_customer_limit;
+      if (perCustomer !== null && perCustomer !== undefined) {
+        const uses = await customerCouponUses(admin, couponCode, profileId, phone);
+        if (uses >= Number(perCustomer)) {
+          return sendError(
+            res,
+            400,
+            Number(perCustomer) === 1
+              ? "You have already used this coupon."
+              : `You have already used this coupon the maximum ${perCustomer} times.`
+          );
+        }
+      }
+      coupon = couponRes.data;
+      couponDiscount = check.discount;
+    }
+
+    const settings = settingsRes.data;
+    const totals = orderTotals({
+      subtotal,
+      discount: couponDiscount,
+      shop: {
+        deliveryCharge: Number(settings?.delivery_charge ?? 0),
+        freeDeliveryAbove: Number(settings?.free_delivery_above || 0),
+        taxRate: Number(settings?.tax_rate || 0),
+      },
+    });
 
     // Reserve stock for every line at once. Each update is conditional on the stock we
     // just read, so a racing order cannot oversell.
@@ -155,6 +211,17 @@ export default async function handler(req, res) {
       return sendError(res, 409, `${failed.line.product.name} just sold out or changed. Please review your cart.`);
     }
 
+    // Count the coupon use now that stock is held. If another order used the last
+    // use first, give the stock back and ask the shopper to remove the coupon.
+    let couponClaimed = false;
+    if (coupon) {
+      couponClaimed = await claimCoupon(admin, coupon);
+      if (!couponClaimed) {
+        await restoreStock(admin, reserved);
+        return sendError(res, 409, "This coupon has just been used up. Please remove it and try again.");
+      }
+    }
+
     const orderNumber = makeOrderNumber();
     const fullAddress = [address, city, state, pincode].filter(Boolean).join(", ");
     const { data: order, error: orderErr } = await admin
@@ -173,11 +240,12 @@ export default async function handler(req, res) {
         delivery_latitude: latitude,
         delivery_longitude: longitude,
         special_instructions: notes || null,
-        subtotal,
-        tax_amount: taxAmount,
-        delivery_charge: deliveryCharge,
-        discount_amount: 0,
-        total_amount: total,
+        subtotal: totals.subtotal,
+        tax_amount: totals.taxAmount,
+        delivery_charge: totals.deliveryCharge,
+        discount_amount: totals.discount,
+        coupon_code: coupon ? coupon.code : null,
+        total_amount: totals.total,
         payment_status: "pending",
         order_status: "pending",
         payment_provider: "cod",
@@ -187,6 +255,7 @@ export default async function handler(req, res) {
 
     if (orderErr) {
       await restoreStock(admin, reserved);
+      if (couponClaimed) await releaseCoupon(admin, coupon);
       throw orderErr;
     }
 
@@ -195,16 +264,21 @@ export default async function handler(req, res) {
         order_id: order.id,
         product_id: l.product.id,
         product_name: l.product.name,
-        variant_name: l.product.size_label || null,
+        // Keeps the size and, when a combo applied, the combo deal visible to staff.
+        variant_name:
+          [l.product.size_label, l.pricing.bundles > 0 ? `Combo ${l.combo.quantity} for ₹${l.combo.price}` : null]
+            .filter(Boolean)
+            .join(" · ") || null,
         unit_price: l.unit,
         quantity: l.quantity,
         total_price: l.total,
       }))
     );
     if (itemsErr) {
-      // Do not leave a half-saved order (no items) or stock held for it.
+      // Do not leave a half-saved order (no items), stock held, or a coupon use counted for it.
       await admin.from("orders").delete().eq("id", order.id);
       await restoreStock(admin, reserved);
+      if (couponClaimed) await releaseCoupon(admin, coupon);
       throw itemsErr;
     }
 
@@ -212,10 +286,12 @@ export default async function handler(req, res) {
       order: {
         id: order.id,
         order_number: order.order_number,
-        subtotal,
-        delivery_charge: deliveryCharge,
-        tax_amount: taxAmount,
-        total_amount: total,
+        subtotal: totals.subtotal,
+        discount: totals.discount,
+        coupon_code: order.coupon_code,
+        delivery_charge: totals.deliveryCharge,
+        tax_amount: totals.taxAmount,
+        total_amount: totals.total,
         payment_method: "cod",
       },
     });

@@ -33,6 +33,11 @@ export const adminDb = {
   },
   assignRole: (email, role) => api.post(r("staff"), { email, role }),
 
+  listCoupons: async () => (await api.get(r("coupons"))).data || [],
+  createCoupon: (fields) => api.post(r("coupons"), fields),
+  updateCoupon: (id, fields) => api.patch(r("coupons", `&id=${id}`), fields),
+  deleteCoupon: (id) => api.del(r("coupons", `&id=${id}`)),
+
   getSettings: () => api.get(r("settings")),
   saveSettings: (settings) => api.put(r("settings"), settings),
 };

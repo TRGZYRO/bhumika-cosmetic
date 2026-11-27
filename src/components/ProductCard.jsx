@@ -32,6 +32,11 @@ export default function ProductCard({ product, currency = "INR", index = 0 }) {
             {discount}% off
           </span>
         )}
+        {product.combo && !outOfStock && (
+          <span className="absolute right-4 top-4 rounded-full bg-gold px-3 py-1 text-xs font-semibold text-ink">
+            {product.combo.quantity} for {formatPrice(product.combo.price, currency)}
+          </span>
+        )}
         {outOfStock && (
           <span className="absolute inset-0 flex items-center justify-center bg-ink/55 font-display text-xl italic text-white">
             Out of stock
@@ -47,6 +52,11 @@ export default function ProductCard({ product, currency = "INR", index = 0 }) {
           <Link to={`/product/${product.id}`} className="hover:text-rose">{product.name}</Link>
         </h3>
         {product.sizeLabel && <p className="mt-1 text-sm text-cocoa/60">{product.sizeLabel}</p>}
+        {product.combo && (
+          <p className="mt-2 text-sm font-semibold text-rosewood">
+            Buy {product.combo.quantity} together for {formatPrice(product.combo.price, currency)}
+          </p>
+        )}
 
         <div className="mt-auto flex items-end justify-between gap-3 pt-5">
           <div className="flex items-baseline gap-2">

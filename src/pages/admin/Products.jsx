@@ -14,6 +14,8 @@ const EMPTY = {
   size_label: "",
   base_price: "",
   compare_at_price: "",
+  combo_quantity: "",
+  combo_price: "",
   stock_quantity: 0,
   image_url: "",
   is_available: true,
@@ -66,6 +68,22 @@ function ProductForm({ initial, categories, onCancel, onSaved }) {
     if (t(form.compare_at_price) !== "" && Number(form.compare_at_price) < Number(form.base_price)) {
       return setError("The MRP should be the same as or higher than the price.");
     }
+    const hasComboQty = t(form.combo_quantity) !== "";
+    const hasComboPrice = t(form.combo_price) !== "";
+    if (hasComboQty !== hasComboPrice) {
+      return setError("For a combo offer, enter both the number of pieces and the combo price, or leave both empty.");
+    }
+    if (hasComboQty) {
+      const pieces = Math.floor(Number(form.combo_quantity));
+      const comboPrice = Number(form.combo_price);
+      if (!(pieces >= 2)) return setError("A combo needs at least 2 pieces.");
+      if (!(comboPrice >= 0)) return setError("Enter a valid combo price.");
+      if (!(comboPrice < Number(form.base_price) * pieces)) {
+        return setError(
+          `The combo price must be lower than buying ${pieces} at the single price (${formatPrice(Number(form.base_price) * pieces)}).`
+        );
+      }
+    }
 
     const payload = {
       name: t(form.name),
@@ -77,6 +95,8 @@ function ProductForm({ initial, categories, onCancel, onSaved }) {
       size_label: t(form.size_label) || null,
       base_price: Number(form.base_price),
       compare_at_price: t(form.compare_at_price) === "" ? null : Number(form.compare_at_price),
+      combo_quantity: hasComboQty ? Math.floor(Number(form.combo_quantity)) : null,
+      combo_price: hasComboPrice ? Number(form.combo_price) : null,
       stock_quantity: Math.max(0, Math.floor(Number(form.stock_quantity) || 0)),
       image_url: form.image_url || null,
       is_available: Boolean(form.is_available),
@@ -96,6 +116,16 @@ function ProductForm({ initial, categories, onCancel, onSaved }) {
   }
 
   const label = "mb-2 block text-sm font-semibold text-rosewood";
+  const comboPieces = Math.floor(Number(form.combo_quantity));
+  const comboPriceNum = Number(form.combo_price);
+  const singlePrice = Number(form.base_price);
+  let comboPreview = null;
+  if (t(form.combo_quantity) !== "" && t(form.combo_price) !== "" && comboPieces >= 2 && singlePrice > 0) {
+    comboPreview =
+      comboPriceNum < singlePrice * comboPieces
+        ? `Shoppers will see "${comboPieces} for ${formatPrice(comboPriceNum)}" and save ${formatPrice(singlePrice * comboPieces - comboPriceNum)} on each set.`
+        : `The combo price must be lower than ${formatPrice(singlePrice * comboPieces)} (${comboPieces} at the single price).`;
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-ink/60 p-4 backdrop-blur-sm md:p-10" role="dialog" aria-modal="true" aria-label={initial?.id ? "Edit product" : "Add product"}>
@@ -165,6 +195,24 @@ function ProductForm({ initial, categories, onCancel, onSaved }) {
             <div className="md:col-span-2">
               <label htmlFor="p-ing" className={label}>Key ingredients</label>
               <textarea id="p-ing" rows={2} className="field" value={form.ingredients} onChange={(e) => set("ingredients", e.target.value)} />
+            </div>
+            <div className="rounded-2xl border border-petal p-5 md:col-span-2">
+              <p className="text-sm font-semibold text-rosewood">Combo offer (optional)</p>
+              <p className="mt-1 text-xs text-cocoa/60">
+                Lets shoppers buy a set for less, for example 2 pieces for ₹199 when one piece is ₹150. The offer shows on the
+                homepage, product page and cart.
+              </p>
+              <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                <div>
+                  <label htmlFor="p-combo-qty" className={label}>Pieces in the combo</label>
+                  <input id="p-combo-qty" type="number" min="2" step="1" className="field" placeholder="e.g. 2" value={form.combo_quantity ?? ""} onChange={(e) => set("combo_quantity", e.target.value)} />
+                </div>
+                <div>
+                  <label htmlFor="p-combo-price" className={label}>Combo price for those pieces (₹)</label>
+                  <input id="p-combo-price" type="number" min="0" step="1" className="field" placeholder="e.g. 199" value={form.combo_price ?? ""} onChange={(e) => set("combo_price", e.target.value)} />
+                </div>
+              </div>
+              {comboPreview && <p className="mt-3 text-sm text-cocoa/75">{comboPreview}</p>}
             </div>
             <div className="flex flex-wrap gap-6 md:col-span-2">
               <label className="flex items-center gap-3 text-sm text-cocoa">
@@ -271,12 +319,13 @@ export default function AdminProducts() {
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[760px] border-collapse text-left text-sm">
+            <table className="w-full min-w-[900px] border-collapse text-left text-sm">
               <thead className="bg-blush text-xs uppercase tracking-wider text-cocoa/60">
                 <tr>
                   <th className="px-5 py-4 font-semibold">Product</th>
                   <th className="px-5 py-4 font-semibold">Category</th>
                   <th className="px-5 py-4 font-semibold">Price</th>
+                  <th className="px-5 py-4 font-semibold">Combo offer</th>
                   <th className="px-5 py-4 font-semibold">Stock</th>
                   <th className="px-5 py-4 font-semibold">Shop</th>
                   <th className="px-5 py-4 font-semibold"><span className="sr-only">Actions</span></th>
@@ -303,6 +352,15 @@ export default function AdminProducts() {
                     <td className="px-5 py-4">
                       <span className="font-semibold text-cocoa">{formatPrice(p.base_price)}</span>
                       {p.compare_at_price && <span className="ml-2 text-xs text-cocoa/45 line-through">{formatPrice(p.compare_at_price)}</span>}
+                    </td>
+                    <td className="px-5 py-4">
+                      {p.combo_quantity ? (
+                        <span className="rounded-full bg-gold/20 px-3 py-1 text-xs font-semibold text-cocoa">
+                          {p.combo_quantity} for {formatPrice(p.combo_price)}
+                        </span>
+                      ) : (
+                        <span className="text-cocoa/40">—</span>
+                      )}
                     </td>
                     <td className="px-5 py-4">
                       <span className={`font-semibold ${p.stock_quantity === 0 ? "text-[#b42318]" : p.stock_quantity <= 5 ? "text-[#a16207]" : "text-cocoa"}`}>

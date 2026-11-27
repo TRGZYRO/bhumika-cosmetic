@@ -1,7 +1,46 @@
 import { useEffect, useMemo, useState } from "react";
-import { ChevronDown, ChevronUp, Phone, MapPin, Trash2 } from "lucide-react";
+import { ChevronDown, ChevronUp, Phone, MapPin, Trash2, ExternalLink } from "lucide-react";
 import { adminDb } from "../../lib/adminDb";
 import { formatPrice } from "../../lib/catalog";
+
+/** Map pin the customer set at checkout (null when they typed the address without a pin). */
+function deliveryPin(o) {
+  const lat = o.delivery_latitude === null || o.delivery_latitude === undefined ? NaN : Number(o.delivery_latitude);
+  const lng = o.delivery_longitude === null || o.delivery_longitude === undefined ? NaN : Number(o.delivery_longitude);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  return { lat, lng };
+}
+
+function DeliveryMap({ order }) {
+  const pin = deliveryPin(order);
+  if (!pin) {
+    return <p className="rounded-xl bg-white p-4 text-cocoa/60">No map pin. The customer did not mark the location on the map.</p>;
+  }
+  const d = 0.006; // roughly 600 m around the pin
+  const bbox = [pin.lng - d, pin.lat - d, pin.lng + d, pin.lat + d].join(",");
+  const embed = `https://www.openstreetmap.org/export/embed.html?bbox=${bbox}&layer=mapnik&marker=${pin.lat},${pin.lng}`;
+  const coords = `${pin.lat.toFixed(6)}, ${pin.lng.toFixed(6)}`;
+  return (
+    <div className="space-y-3">
+      <p className="text-xs font-semibold uppercase tracking-wider text-cocoa/60">Map pin from checkout</p>
+      <iframe
+        title={`Delivery location for order ${order.order_number}`}
+        src={embed}
+        className="h-64 w-full rounded-2xl border border-petal"
+        loading="lazy"
+      />
+      <p className="text-cocoa/75">Coordinates: <span className="font-mono">{coords}</span></p>
+      <div className="flex flex-wrap gap-4 text-sm font-semibold">
+        <a href={`https://www.google.com/maps?q=${pin.lat},${pin.lng}`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 text-rosewood hover:text-rose">
+          <ExternalLink size={14} /> Open in Google Maps
+        </a>
+        <a href={`https://www.openstreetmap.org/?mlat=${pin.lat}&mlon=${pin.lng}#map=17/${pin.lat}/${pin.lng}`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 text-rosewood hover:text-rose">
+          <ExternalLink size={14} /> Open in OpenStreetMap
+        </a>
+      </div>
+    </div>
+  );
+}
 
 const STATUSES = [
   { key: "pending", label: "New" },
@@ -193,6 +232,9 @@ export default function AdminOrders() {
                         </ul>
                         <dl className="mt-5 space-y-1.5 border-t border-petal pt-4 text-sm">
                           <div className="flex justify-between"><dt className="text-cocoa/65">Subtotal</dt><dd>{formatPrice(o.subtotal)}</dd></div>
+                          {Number(o.discount_amount) > 0 && (
+                            <div className="flex justify-between text-[#166534]"><dt>Coupon{o.coupon_code ? ` ${o.coupon_code}` : ""}</dt><dd>−{formatPrice(o.discount_amount)}</dd></div>
+                          )}
                           <div className="flex justify-between"><dt className="text-cocoa/65">Delivery</dt><dd>{Number(o.delivery_charge) === 0 ? "Free" : formatPrice(o.delivery_charge)}</dd></div>
                           <div className="flex justify-between font-semibold"><dt>Total (cash on delivery)</dt><dd>{formatPrice(o.total_amount)}</dd></div>
                         </dl>
@@ -202,6 +244,8 @@ export default function AdminOrders() {
                         <p className="flex items-center gap-2 font-medium text-cocoa"><Phone size={15} className="text-gold" /> {o.customer_name} · {o.customer_phone}</p>
                         {o.customer_email && <p className="text-cocoa/75">{o.customer_email}</p>}
                         <p className="flex items-start gap-2 text-cocoa/75"><MapPin size={15} className="mt-0.5 flex-none text-gold" /> {o.delivery_address}</p>
+                        {o.delivery_landmark && <p className="text-cocoa/75"><span className="font-semibold text-cocoa">Landmark:</span> {o.delivery_landmark}</p>}
+                        <DeliveryMap order={o} />
                         {o.special_instructions && (
                           <p className="rounded-xl bg-white p-4 text-cocoa/75"><span className="font-semibold text-cocoa">Note:</span> {o.special_instructions}</p>
                         )}

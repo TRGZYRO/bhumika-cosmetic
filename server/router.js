@@ -12,6 +12,7 @@ export const ROUTES = {
   "admin-data": () => import("./routes/admin-data.js"),
   products: () => import("./routes/products.js"),
   orders: () => import("./routes/orders.js"),
+  coupons: () => import("./routes/coupons.js"),
   "my-orders": () => import("./routes/my-orders.js"),
   profile: () => import("./routes/profile.js"),
   addresses: () => import("./routes/addresses.js"),

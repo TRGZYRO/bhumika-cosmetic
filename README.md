@@ -6,6 +6,7 @@ A storefront and admin panel for Bhumika Cosmetic. Customers browse, search and 
 
 ## What's included
 
+- **Offers:** combo offers on a product (for example 2 for ₹199 when one piece is ₹150), shown on the homepage, product pages and in the cart, with an "add one more" button. Discount coupons with a minimum order, optional cap, usage limit and expiry, managed in **Admin → Coupons**.
 - **Shop:** homepage with categories and featured products, a shop page with search, category, brand, price and in-stock filters and sorting (filters are kept in the URL), product pages with related items, cart, and checkout.
 - **Orders:** cash on delivery only. The server re-checks prices, delivery charges and stock on every order, so the browser can't set prices. Stock is reserved as the order is placed.
 - **Accounts:** sign up and sign in with email or Google, a details page with a saved delivery address, and an order history with a progress timeline.
@@ -25,7 +26,7 @@ With no environment variables set, the site still runs in **demo mode**: it show
 
 ## 2. Set up the database
 
-Create a Supabase project. In the SQL editor, run every file in `supabase/migrations/` **in numeric order**, from `001` to `009`. The cosmetics migration (`009`) adds the product fields, the address field, and the shop categories. It also renames the café settings column.
+Create a Supabase project. In the SQL editor, run every file in `supabase/migrations/` **in numeric order**, from `001` to `012`, then run `014` once. The cosmetics migration (`009`) adds the product fields, the address field, and the shop categories. It also renames the café settings column. Migration `014` (run it once, alone) adds combo offers, the coupons table and the per-customer coupon limit. It is safe to re-run.
 
 Then create the first owner:
 
@@ -57,6 +58,8 @@ All `/api` routes run through one catch-all function (`api/[...route].js`). This
 ## 5. Making changes
 
 - **Products, categories, prices, stock, and photos:** use **Admin → Products** and **Admin → Categories**. Photos are stored in the Supabase Storage bucket `menu-images`.
+- **Combo offers:** set in **Admin → Products** (the Combo offer section of the product form).
+- **Coupons:** **Admin → Coupons**.
 - **Shop name, contact, delivery charge, free-delivery threshold, tax:** **Admin → Shop settings**.
 - **Demo catalogue** (shown only when the database is unavailable): `src/data/shop.js`.
 - **Theme colours:** the `@theme` block at the top of `src/index.css`.

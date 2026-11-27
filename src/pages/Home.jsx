@@ -22,6 +22,7 @@ export default function Home() {
   const showcase = (featured.length ? featured : products).slice(0, 4);
   const heroProduct = showcase[0];
   const freeAbove = shop?.freeDeliveryAbove || 0;
+  const comboProducts = products.filter((p) => p.combo && p.stock > 0).slice(0, 4);
 
   return (
     <>
@@ -68,6 +69,11 @@ export default function Home() {
                     {formatPrice(heroProduct.price, currency)}
                   </span>
                 </div>
+              )}
+              {heroProduct?.combo && (
+                <p className="px-2 pb-2 text-sm text-petal">
+                  Combo offer: {heroProduct.combo.quantity} for {formatPrice(heroProduct.combo.price, currency)}
+                </p>
               )}
             </div>
           </Reveal>
@@ -119,6 +125,24 @@ export default function Home() {
                     </span>
                   </Link>
                 </Reveal>
+              ))}
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* Combo offers */}
+      {comboProducts.length > 0 && (
+        <section className="section-dark px-6 py-24">
+          <div className="mx-auto max-w-7xl">
+            <Reveal className="mb-12 max-w-2xl">
+              <p className="text-xs font-semibold uppercase tracking-[0.25em] text-petal">Offers</p>
+              <h2 className="mt-3 text-5xl font-semibold leading-tight text-white md:text-6xl">Buy together, pay less</h2>
+              <p className="mt-4 text-lg text-mauve">These favourites cost less when you buy the set. Add one more to your cart and the combo price applies.</p>
+            </Reveal>
+            <div className="grid gap-8 sm:grid-cols-2 lg:grid-cols-4">
+              {comboProducts.map((p, i) => (
+                <ProductCard key={p.id} product={p} currency={currency} index={i} />
               ))}
             </div>
           </div>

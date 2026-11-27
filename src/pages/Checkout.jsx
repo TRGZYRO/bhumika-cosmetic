@@ -8,6 +8,7 @@ import { useAuth } from "../contexts/AuthContext";
 import { api } from "../lib/api";
 import { calcTotals, formatPrice } from "../lib/catalog";
 import PlacingOrderOverlay from "../components/PlacingOrderOverlay";
+import CouponBox from "../components/CouponBox";
 
 const PHONE_PATTERN = /^[+0-9 ()-]{7,20}$/;
 const EMAIL_PATTERN = /^\S+@\S+\.\S+$/;
@@ -17,11 +18,11 @@ const EMAIL_PATTERN = /^\S+@\S+\.\S+$/;
  * Orders go to /api/orders, which re-checks prices and stock on the server.
  */
 export default function Checkout() {
-  const { items, subtotal, itemCount, clearCart } = useCart();
+  const { lines, subtotal, comboSavings, discount, couponCode, coupon, itemCount, clearCart } = useCart();
   const { shop, source } = useCatalog();
   const { user, profile, isAuthenticated } = useAuth();
   const currency = shop?.currency || "INR";
-  const totals = calcTotals(subtotal, shop);
+  const totals = calcTotals(subtotal, shop, discount);
 
   // Form state
   const [form, setForm] = useState({
@@ -564,6 +565,12 @@ export default function Checkout() {
       customer = customerFromAddress(addr);
     }
 
+    // A coupon has to be valid for this cart before the order can go through.
+    if (couponCode && coupon.status !== "applied") {
+      setError(coupon.status === "checking" ? "Checking your coupon. Please try again in a moment." : coupon.message || "This coupon can't be used. Remove it or try another code.");
+      return;
+    }
+
     setSubmitting(true);
     try {
       if (source === "demo") {
@@ -576,9 +583,10 @@ export default function Checkout() {
       const data = await api.post(
         "/api/orders",
         {
-          items: items.map((i) => ({ productId: i.productId, quantity: i.quantity })),
+          items: lines.map((i) => ({ productId: i.productId, quantity: i.quantity })),
           customer,
           paymentMethod: "cod",
+          couponCode: couponCode || undefined,
         },
         {
           timeoutMs: 30000,
@@ -875,21 +883,33 @@ export default function Checkout() {
           <aside className="card h-fit p-7 lg:sticky lg:top-32">
             <h2 className="mb-5 text-2xl font-semibold text-rosewood">Your order</h2>
             <ul className="mb-6 max-h-72 space-y-4 overflow-y-auto pr-1">
-              {items.map((item) => (
+              {lines.map((item) => (
                 <li key={item.productId} className="flex items-start justify-between gap-4 text-sm">
                   <span className="text-cocoa">
                     {item.name}
                     {item.sizeLabel && <span className="text-cocoa/55"> · {item.sizeLabel}</span>}
                     <span className="text-cocoa/55"> × {item.quantity}</span>
+                    {item.pricing.bundles > 0 && (
+                      <span className="mt-0.5 block text-xs font-semibold text-[#166534]">
+                        Combo {item.combo.quantity} for {formatPrice(item.combo.price, currency)}
+                      </span>
+                    )}
                   </span>
-                  <span className="font-medium">{formatPrice(item.price * item.quantity, currency)}</span>
+                  <span className="font-medium">{formatPrice(item.pricing.total, currency)}</span>
                 </li>
               ))}
             </ul>
             <dl className="space-y-3 border-t border-petal pt-5 text-sm">
               <div className="flex justify-between"><dt className="text-cocoa/70">Subtotal</dt><dd>{formatPrice(totals.subtotal, currency)}</dd></div>
+              {comboSavings > 0 && (
+                <div className="flex justify-between text-[#166534]"><dt>Combo savings</dt><dd>−{formatPrice(comboSavings, currency)}</dd></div>
+              )}
+              {totals.discount > 0 && (
+                <div className="flex justify-between text-[#166534]"><dt>Coupon {couponCode}</dt><dd>−{formatPrice(totals.discount, currency)}</dd></div>
+              )}
               <div className="flex justify-between"><dt className="text-cocoa/70">Delivery</dt><dd>{totals.deliveryCharge === 0 ? "Free" : formatPrice(totals.deliveryCharge, currency)}</dd></div>
               {totals.taxAmount > 0 && <div className="flex justify-between"><dt className="text-cocoa/70">Tax</dt><dd>{formatPrice(totals.taxAmount, currency)}</dd></div>}
+              <div className="pt-1"><CouponBox /></div>
               <div className="flex items-baseline justify-between border-t border-petal pt-4">
                 <dt className="text-lg font-semibold">To pay</dt>
                 <dd className="text-2xl font-semibold text-rosewood">{formatPrice(totals.total, currency)}</dd>
